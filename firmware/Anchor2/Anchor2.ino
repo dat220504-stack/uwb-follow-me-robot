@@ -1,9 +1,7 @@
 /*
-  A2: capture RAW range for Tag 0x007D, send it to A1 using UART2.
-  TX GPIO17 -> A1 RX GPIO16; common GND; 115200 baud, 8N1, 3.3 V.
-  Callback only stores a sample/event. Sending runs outside DW1000Ranging.loop().
-  Same UWB mode and antenna delay as the supplied original; library unchanged.
-  UART dung dong chu de doc; phan gui nam trong sketch. Xem docs/UART.md.
+  A2 do khoang cach RAW, gui sang A1 qua UART; khong tinh goc tai day.
+  Noi A2 TX17 -> A1 RX16, chung GND; 115200 baud, 8N1, 3.3 V.
+  Callback luu mau, loop gui dong $A2,poll,range_mm,age_ms,valid*checksum.
 */
 #include <SPI.h>
 #include <math.h>
@@ -12,6 +10,7 @@
 #include <stdio.h>
 #include <string.h>
 
+// Cau hinh UWB goc va UART sang A1.
 char ANCHOR_ADD[] = "87:17:5B:D5:A9:9A:E2:9C";
 constexpr uint8_t SPI_SCK = 18, SPI_MISO = 19, SPI_MOSI = 23;
 constexpr uint8_t PIN_RST = 27, PIN_IRQ = 34, PIN_SS = 4;
@@ -26,23 +25,19 @@ const uint16_t TAG_SHORT = 0x007D;
 const uint64_t POLL_MASK = (uint64_t(1) << 40) - 1;
 const uint32_t UART_TRANSFER_MS = 6;
 
+// Chi giu mau moi nhat. POLL cua Tag giup A1 ghep dung luot do.
 struct CapturedSample {
     float meters = 0.0f;
     uint64_t pollStamp = 0;
     uint32_t timeMs = 0;
 };
 CapturedSample pendingSample;
-bool samplePending = false, tagLostPending = false, tagAddedPending = false;
-
-void newRange();
-void newBlink(DW1000Device *device);
-void inactiveDevice(DW1000Device *device);
-void serviceUartTx();
-uint8_t uartChecksum(const char *text);
+bool samplePending = false;
+bool tagLostPending = false;
 
 void setup() {
     Serial.begin(115200);
-    // No software TX queue: availableForWrite() reports hardware FIFO space.
+    // Khong dung hang doi TX: chi gui khi FIFO phan cung dang trong.
     AnchorUart.setTxBufferSize(0);
     AnchorUart.begin(UART_BAUD, SERIAL_8N1, UART_RX_PIN, UART_TX_PIN);
     delay(1000);
@@ -58,8 +53,6 @@ void setup() {
 
 void loop() {
     DW1000Ranging.loop();
-    // Ensure a reconnect invalidates cached A1 data before sending a new sample.
-    if (tagAddedPending) { tagLostPending = true; tagAddedPending = false; }
     serviceUartTx();
 }
 
@@ -73,7 +66,8 @@ void newRange() {
 }
 
 void newBlink(DW1000Device *device) {
-    if (device && device->getShortAddress() == TAG_SHORT) tagAddedPending = true;
+    // Tag noi lai: bao A1 bo du lieu cu truoc khi gui mau moi.
+    if (device && device->getShortAddress() == TAG_SHORT) tagLostPending = true;
 }
 
 void inactiveDevice(DW1000Device *device) {
@@ -84,6 +78,7 @@ void inactiveDevice(DW1000Device *device) {
 }
 
 uint8_t uartChecksum(const char *text) {
+    // XOR tung ky tu de kiem tra loi truyen co ban.
     uint8_t sum = 0;
     for (uint8_t i = 0; text[i] != '\0'; ++i) sum ^= uint8_t(text[i]);
     return sum;

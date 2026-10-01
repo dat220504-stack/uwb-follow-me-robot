@@ -1,5 +1,24 @@
 #include <cassert>
 #include <iostream>
+#include "stubs/DW1000Ranging.h"
+// Arduino tu khai bao ham; C++ tren may can khai bao truoc.
+void newRange();
+void tagConnectionChanged(DW1000Device *device);
+void clearFreshPair();
+void resetMeasurements();
+void serviceUart();
+void readUartLine(uint32_t now);
+uint8_t uartChecksum(const char *text);
+void tryMakePair();
+void dropOldSingleSample();
+void calculateGeometry(float d1, float d2);
+void updateFilteredDirection(float angleDeg, float d1, float d2);
+void clearDirectionVotes();
+void flushDirectionVotes(uint32_t now);
+void addDirectionVote(int direction, float d1, float d2, float angleDeg, uint32_t now);
+void resetStartupCalibration();
+void collectCalibrationPair(float d1Raw, float d2Raw, uint32_t now);
+void serviceStartupCalibration(uint32_t now);
 #include "../firmware/Anchor1/Anchor1.ino"
 
 void resetTest() {
@@ -8,13 +27,12 @@ void resetTest() {
     OFFSET_A2_M = 0.0f;
     resetMeasurements();
     anchor1 = {}; anchor2 = {};
-    localTagLost = localTagAdded = false;
+    tagChanged = false;
     uartLength = 0; uartReading = false; uartLineStartMs = fakeNow;
     lastRemotePollKnown = false; lastRemotePoll = 0;
     lastUartServiceMs = fakeNow;
     discardUartBacklog = false;
     pairedCount = rejectedFrames = 0;
-    targetTimedOut = false;
     voteWindowStartMs = calibrationLastStatusMs = fakeNow;
     Serial.output.clear(); AnchorUart.rx.clear();
     DW1000Ranging.device = {};
@@ -162,7 +180,43 @@ int main() {
     flushDirectionVotes(1600); assert(lastVotedDirection == -1);
     resetTest(); offsetCalibrated = true; local(90); receive(remote(90)); tryMakePair();
     fakeNow = 601; lastUartServiceMs = fakeNow; loop();
-    assert(targetTimedOut && !filterReady && lastVotedDirection == -1);
+    assert(!lastPairKnown && !filterReady && lastVotedDirection == -1);
     assert(Serial.output.find("valid=0") != std::string::npos);
+
+    // Keep both original calibration gates: 2 s settle, >=30 pairs AND >=3 s.
+    resetTest();
+    for (uint32_t time : {100u, 1100u, 2099u}) collectCalibrationPair(1.2f, 1.1f, time);
+    assert(calibrationPairs == 0 && !offsetCalibrated);
+    for (uint32_t time = 2100; time <= 2129; ++time) collectCalibrationPair(1.2f, 1.1f, time);
+    assert(calibrationPairs == 30 && !offsetCalibrated);
+    for (uint32_t time : {3100u, 4100u, 5099u}) collectCalibrationPair(1.2f, 1.1f, time);
+    assert(!offsetCalibrated);
+    collectCalibrationPair(1.2f, 1.1f, 5100);
+    assert(offsetCalibrated && fabsf(OFFSET_A2_M - 0.1f) < 0.00001f);
+    resetTest(); collectCalibrationPair(1.2f, 1.1f, 100);
+    collectCalibrationPair(1.2f, 1.1f, 1100);
+    for (uint32_t i = 0; i < 15; ++i) collectCalibrationPair(1.2f, 1.1f, 2100 + i * 220);
+    assert(calibrationPairs == 15 && !offsetCalibrated);
+
+    // First Kalman sample, normal gain, reset after 800 ms, and 2-degree hysteresis.
+    resetTest(); offsetCalibrated = true;
+    updateFilteredDirection(0, 1, 1);
+    fakeNow = 200; updateFilteredDirection(20, 1, 1);
+    assert(fabsf(filteredAngle - 20.0f * 28.6f / 53.6f) < 0.00001f);
+    assert(directionIndex == 3); // Angle >10 but <=12: retain THANG.
+    fakeNow += 801; updateFilteredDirection(-20, 1, 1);
+    assert(filteredAngle == -20 && angleVariance == KALMAN_R && directionIndex == 2);
+
+    // A sample exactly on the 500-ms boundary belongs to the next window.
+    resetTest(); offsetCalibrated = true;
+    addDirectionVote(2, 1.11f, 1.22f, -20, 101);
+    addDirectionVote(2, 1.33f, 1.44f, -18, 102);
+    addDirectionVote(4, 9.9f, 9.8f, 20, 103);
+    addDirectionVote(4, 2.1f, 2.2f, 25, 600);
+    assert(lastVotedDirection == 2 && directionVotes[4].count == 1);
+    assert(Serial.output.find("dA1=1.330 m | dA2=1.440 m | goc=-18.0") != std::string::npos);
+    flushDirectionVotes(1100); assert(lastVotedDirection == 4);
+    addDirectionVote(2, 1, 1, -15, 1101);
+    flushDirectionVotes(2100); assert(lastVotedDirection == -1);
     std::cout << "Anchor1: pairing, text parser, freshness, calibration, geometry, votes, timeout PASS\n";
 }

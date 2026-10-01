@@ -1,27 +1,21 @@
 /*
-  Tag: keep the original UWB role, EUI, mode, default antenna delay and A2 -> A1 order.
-  Auto-offset, geometry, Kalman and direction voting now run on Anchor 1.
-  No rejection based on reply slot 7000/21000; library timing is unchanged.
-  Do not delete a network device inside a library callback.
+  Tag chi quan ly hai Anchor: A2 vao truoc, A1 vao sau.
+  Tu can offset, tinh goc, Kalman va vote 500 ms da chuyen sang A1.
+  Giu cau hinh UWB goc; khong sua thu vien hay ep reply slot.
 */
 #include <SPI.h>
 #include "DW1000.h"
 #include "DW1000Ranging.h"
 
+// Cau hinh goc cua Tag.
 char TAG_ADD[] = "7D:00:22:EA:82:60:3B:9C";
-const uint16_t ANCHOR1_SHORT = 0x1786, ANCHOR2_SHORT = 0x1787;
+const uint16_t ANCHOR1_SHORT = 0x1786;
+const uint16_t ANCHOR2_SHORT = 0x1787;
 constexpr uint8_t SPI_SCK = 18, SPI_MISO = 19, SPI_MOSI = 23;
 constexpr uint8_t PIN_RST = 27, PIN_IRQ = 34, DW_CS = 4;
 const bool DEBUG_LOG = false;
 bool networkChanged = false, rejectUnknown = false;
 uint16_t unknownAddress = 0;
-
-void newDevice(DW1000Device *device);
-void inactiveDevice(DW1000Device *device);
-DW1000Device *findAnchor(uint16_t address);
-void removeAnchor(uint16_t address);
-void enforceA2First();
-bool correctAnchorOrder();
 
 void setup() {
     Serial.begin(115200);
@@ -30,13 +24,14 @@ void setup() {
     DW1000Ranging.initCommunication(PIN_RST, DW_CS, PIN_IRQ);
     DW1000Ranging.attachNewDevice(newDevice);
     DW1000Ranging.attachInactiveDevice(inactiveDevice);
-    // No setAntennaDelay(): keep the supplied library default of 16384.
+    // Khong setAntennaDelay(): Tag giu mac dinh 16384 cua thu vien.
     DW1000Ranging.startAsTag(TAG_ADD, DW1000.MODE_SHORTDATA_FAST_LOWPOWER, false);
     Serial.println("TAG READY | A2 FIRST | PROCESSING AT A1");
 }
 
 void loop() {
     DW1000Ranging.loop();
+    // Chi xoa Anchor sau khi thu vien xu ly xong, khong xoa trong callback.
     if (networkChanged) enforceA2First();
 }
 
@@ -87,15 +82,5 @@ void enforceA2First()
     if (a2 == nullptr || a2->getIndex() != 0) {
         removeAnchor(ANCHOR1_SHORT);
     }
-    // Neu A2 bi thu vien xoa do timeout, A1 cung bi loai o day.
-    // A1 se duoc thu vien nhan lai qua thu tuc BLINK/RANGING_INIT.
-    // Viec nhan lai co the mat vai giay; khong reset ESP32 lien tuc.
-}
-
-bool correctAnchorOrder()
-{
-    DW1000Device *a2 = findAnchor(ANCHOR2_SHORT);
-    DW1000Device *a1 = findAnchor(ANCHOR1_SHORT);
-    return a2 != nullptr && a1 != nullptr &&
-           a2->getIndex() == 0 && a1->getIndex() == 1;
+    // A1 se tu noi lai sau A2 qua BLINK/RANGING_INIT.
 }

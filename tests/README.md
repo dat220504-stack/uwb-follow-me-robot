@@ -2,6 +2,8 @@
 
 Các bài kiểm tra C++ include trực tiếp ba sketch. Chỉ `millis`, UART, SPI và đối tượng DW1000 ở biên I/O được giả lập; parser, ghép mẫu, calibration, hình học, Kalman, vote và thứ tự Anchor chạy từ code firmware.
 
+Arduino tự sinh khai báo hàm cho `.ino`. Khi chạy C++ trên máy, các khai báo tương ứng nằm ở đầu file test; sketch không cần giữ thêm đoạn khai báo này.
+
 Trên Windows có GCC C++17:
 
 ```powershell
@@ -23,6 +25,7 @@ Bộ test kiểm tra:
 - A2 giữ mẫu mới nhất khi UART bận; bỏ mẫu quá tuổi; báo range không hợp lệ và mất/kết nối lại Tag.
 - Thông báo mất/kết nối lại Tag xóa mẫu/hướng cũ nhưng giữ offset A1.
 - Calibration với dữ liệu ổn định/không ổn định; bù offset một lần; dấu góc, tam giác vô lý, hòa phiếu, cửa sổ trống và mất mục tiêu.
+- Các mốc 2 s / 30 cặp / 3 s của calibration; gain và reset Kalman, vùng trễ 2°; mốc vote 500 ms, mẫu mới nhất của hướng thắng và bỏ phiếu cũ sau khi loop đình trệ.
 - Tag giữ A2 trước A1, loại Anchor lạ và không xóa thiết bị ngay trong callback.
 
 Các test không mô phỏng sóng UWB, thời gian ISR, UART driver thật hoặc nhiễu đo. Biên dịch với thư viện thực và thử BU01 là bước riêng; xem [kết quả kiểm tra](../docs/VALIDATION.md).

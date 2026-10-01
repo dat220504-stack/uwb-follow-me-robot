@@ -8,7 +8,9 @@
 | A1 bên trái xe | [Anchor1.ino](firmware/Anchor1/Anchor1.ino) | Nhận d1, nhận UART d2, ghép lượt đo, auto-offset, hình học, Kalman, vote |
 | A2 bên phải xe | [Anchor2.ino](firmware/Anchor2/Anchor2.ino) | Lưu d2 RAW trong callback, gửi UART ngoài callback |
 
-Phần UART nằm ngay trong hai sketch Anchor; không cần file hỗ trợ `UwbUart.h`. Bản gốc nằm trên `main` tại [commit c435ee5](https://github.com/dat220504-stack/uwb-follow-me-robot/commit/c435ee53ac9a2b7701af0314960180eef9f1a5f2). [Markdown Tag gốc](docs/source/Tag_original.md) được giữ để đối chiếu.
+Mỗi node chỉ cần một file `.ino`, phần UART nằm ngay trong hai sketch Anchor. Các chức năng tự cân offset, tính góc, Kalman và vote của Tag cũ được giữ ở A1. Bản gốc nằm trên `main` tại [commit c435ee5](https://github.com/dat220504-stack/uwb-follow-me-robot/commit/c435ee53ac9a2b7701af0314960180eef9f1a5f2). [Markdown Tag gốc](docs/source/Tag_original.md) được giữ để đối chiếu.
+
+Đọc `setup()` và `loop()` trước. A1 chia thành các mục có chú thích: cấu hình → nhận dữ liệu → ghép cặp → góc/Kalman → vote → calibration. Các khai báo hàm Arduino tự sinh đã được bỏ khỏi sketch; không thêm thư viện hỗ trợ.
 
 ## Cấu hình
 

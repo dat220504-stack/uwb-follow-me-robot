@@ -1,5 +1,12 @@
 #include <cassert>
 #include <iostream>
+#include "stubs/DW1000Ranging.h"
+// Arduino tu khai bao ham; C++ tren may can khai bao truoc.
+void newRange();
+void newBlink(DW1000Device *device);
+void inactiveDevice(DW1000Device *device);
+void serviceUartTx();
+uint8_t uartChecksum(const char *text);
 #include "../firmware/Anchor2/Anchor2.ino"
 
 void capture(uint64_t poll, float meters) {

@@ -1,12 +1,9 @@
 /*
-  A1: RAW d1 + UART d2 -> auto OFFSET A2 -> geometry -> Kalman -> vote 500 ms.
-  Tag still owns A2 -> A1 UWB order. No reply-slot validation here.
-  Pairs require the SAME 40-bit Tag POLL timestamp and age <= 80 ms.
-  Each callback only captures a sample/event; UART and calculations run in loop().
-  At A1 startup/reset, keep Tag stationary in front, centered, about 1 m away.
-  Wait for CALIB_OK. Offset stays in RAM across Tag/A2 reconnects.
-  UART dung dong chu: $A2,poll,range_mm,age_ms,valid*checksum\n.
-  Phan gui/nhan nam ngay trong sketch. Xem docs/UART.md.
+  A1: nhan d1 tu BU01 va d2 RAW qua UART, ghep cung luot POLL.
+  Luong xu ly: tu can offset -> tinh goc -> Kalman -> vote 500 ms.
+  Khi bat/reset A1: giu Tag yen chinh giua phia truoc, cach tam 1 m,
+  cho CALIB_OK roi di chuyen. Mat/noi lai Tag hoac A2 van giu offset.
+  Doc setup() va loop() truoc; cac ham ben duoi theo tung cong viec.
 */
 #include <SPI.h>
 #include <math.h>
@@ -16,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+// 1. CAU HINH: giu chan, dia chi va thong so cua ban goc.
 char ANCHOR_ADD[] = "86:17:5B:D5:A9:9A:E2:9C";
 constexpr uint8_t SPI_SCK = 18, SPI_MISO = 19, SPI_MOSI = 23;
 constexpr uint8_t PIN_RST = 27, PIN_IRQ = 34, PIN_SS = 4;
@@ -57,15 +55,16 @@ const float KALMAN_Q = 36.0f;   // Tang: bam nhanh hon, rung nhieu hon.
 const float KALMAN_R = 25.0f;   // Tang: muot hon, tre hon.
 const uint32_t FILTER_RESET_MS = 800;
 
+// 2. DU LIEU: mau do, UART, bo loc, phieu huong va mau calibration.
 struct RangeSample {
     float meters = 0.0f;
     uint64_t pollStamp = 0;
-    uint32_t timeMs = 0; // Always A1's clock, for local callback or UART receipt.
+    uint32_t timeMs = 0; // Thoi diem do d1 / nhan d2, deu tren dong ho A1.
     uint32_t sourceAgeMs = 0;
     bool fresh = false;
 };
 RangeSample anchor1, anchor2;
-bool localTagLost = false, localTagAdded = false;
+bool tagChanged = false;
 char uartLine[UART_LINE_SIZE];
 uint8_t uartLength = 0;
 bool uartReading = false;
@@ -77,7 +76,6 @@ bool discardUartBacklog = true;
 bool lastPairKnown = false, lastConsumedPollKnown = false;
 uint64_t lastConsumedPoll = 0;
 uint32_t lastPairMs = 0;
-bool targetTimedOut = false;
 uint32_t pairedCount = 0, rejectedFrames = 0;
 
 bool filterReady = false;
@@ -102,7 +100,6 @@ int lastVotedDirection = -1;
 
 bool offsetCalibrated = false;
 bool calibrationStarted = false;
-bool calibrationCollecting = false;
 uint32_t calibrationStartMs = 0;
 uint32_t calibrationCollectStartMs = 0;
 uint32_t calibrationLastPairMs = 0;
@@ -113,26 +110,7 @@ float calibrationMeanD2 = 0.0f;
 float calibrationM2D1 = 0.0f;
 float calibrationM2D2 = 0.0f;
 
-void newRange();
-void newBlink(DW1000Device *device);
-void inactiveDevice(DW1000Device *device);
-void clearFreshPair();
-void resetMeasurements();
-void serviceUart();
-void readUartLine(uint32_t now);
-uint8_t uartChecksum(const char *text);
-void tryMakePair();
-void dropOldSingleSample();
-bool hasRecentAnchorData(uint32_t now);
-void calculateGeometry(float d1, float d2);
-void updateFilteredDirection(float angleDeg, float d1, float d2);
-void clearDirectionVotes();
-void flushDirectionVotes(uint32_t now);
-void addDirectionVote(int direction, float d1, float d2, float angleDeg, uint32_t now);
-void resetStartupCalibration();
-void collectCalibrationPair(float d1Raw, float d2Raw, uint32_t now);
-void serviceStartupCalibration(uint32_t now);
-
+// 3. CHAY CHINH: UWB -> UART -> ghep cap -> calibration / xuat huong.
 void setup() {
     Serial.begin(115200);
     AnchorUart.setRxBufferSize(256);
@@ -142,8 +120,8 @@ void setup() {
     DW1000Ranging.initCommunication(PIN_RST, PIN_SS, PIN_IRQ);
     DW1000.setAntennaDelay(ANTENNA_DELAY);
     DW1000Ranging.attachNewRange(newRange);
-    DW1000Ranging.attachBlinkDevice(newBlink);
-    DW1000Ranging.attachInactiveDevice(inactiveDevice);
+    DW1000Ranging.attachBlinkDevice(tagConnectionChanged);
+    DW1000Ranging.attachInactiveDevice(tagConnectionChanged);
     DW1000Ranging.startAsAnchor(ANCHOR_ADD, DW1000.MODE_SHORTDATA_FAST_LOWPOWER, false);
     voteWindowStartMs = millis();
     calibrationLastStatusMs = voteWindowStartMs;
@@ -155,22 +133,21 @@ void setup() {
 
 void loop() {
     DW1000Ranging.loop();
-    if (localTagLost || localTagAdded) {
+    if (tagChanged) {
         resetMeasurements();
-        localTagLost = localTagAdded = false;
+        tagChanged = false;
     }
     serviceUart();
-    dropOldSingleSample();
-    tryMakePair();
+    tryMakePair(); // Tu bo mau cu, chi ghep hai mau cung POLL.
+
     const uint32_t now = millis();
-    if (offsetCalibrated && lastPairKnown && !targetTimedOut && uint32_t(now - lastPairMs) > TARGET_TIMEOUT_MS) {
+    if (offsetCalibrated && lastPairKnown && uint32_t(now - lastPairMs) > TARGET_TIMEOUT_MS)
         resetMeasurements();
-        targetTimedOut = true;
-    }
     if (!offsetCalibrated) serviceStartupCalibration(now);
     else flushDirectionVotes(now);
 }
 
+// 4. NHAN DU LIEU: callback chi luu mau; UART doc tung byte, khong cho.
 void newRange() {
     DW1000Device *device = DW1000Ranging.getDistantDevice();
     if (!device || device->getShortAddress() != TAG_SHORT) return;
@@ -182,12 +159,9 @@ void newRange() {
     anchor1.fresh = true;
 }
 
-void newBlink(DW1000Device *device) {
-    if (device && device->getShortAddress() == TAG_SHORT) localTagAdded = true;
-}
-
-void inactiveDevice(DW1000Device *device) {
-    if (device && device->getShortAddress() == TAG_SHORT) localTagLost = true;
+void tagConnectionChanged(DW1000Device *device) {
+    // Mat Tag va noi lai Tag deu phai bo ket qua cu.
+    if (device && device->getShortAddress() == TAG_SHORT) tagChanged = true;
 }
 
 void serviceUart() {
@@ -270,6 +244,7 @@ void readUartLine(uint32_t now) {
     anchor2.fresh = true;
 }
 
+// 5. GHEP CAP: cung POLL, tuoi <= 80 ms, moi cap dung mot lan.
 void clearFreshPair() {
     anchor1.fresh = anchor2.fresh = false;
 }
@@ -281,7 +256,7 @@ void resetMeasurements() {
     filterReady = false;
     clearDirectionVotes();
     lastVotedDirection = -1;
-    // Keep the calibrated offset across Tag/A2 reconnects.
+    // Da can xong thi giu offset trong RAM; chua xong thi lay lai mau.
     if (!offsetCalibrated) resetStartupCalibration();
 }
 
@@ -292,103 +267,65 @@ void dropOldSingleSample() {
         anchor2.fresh = false;
 }
 
-bool hasRecentAnchorData(uint32_t now) {
-    return lastPairKnown && uint32_t(now - lastPairMs) <= CALIB_MAX_PAIR_GAP_MS;
-}
-
 void tryMakePair() {
-    if (!anchor1.fresh || !anchor2.fresh || anchor1.pollStamp != anchor2.pollStamp) return;
-    // Chi ghep cung POLL, con moi va chua dung cap nay.
     dropOldSingleSample();
-    if (!anchor1.fresh || !anchor2.fresh) return;
-    const uint32_t now = millis();
+    if (!anchor1.fresh || !anchor2.fresh || anchor1.pollStamp != anchor2.pollStamp) return;
+    if (lastConsumedPollKnown && anchor1.pollStamp == lastConsumedPoll) {
+        clearFreshPair();
+        return;
+    }
     const float d1 = anchor1.meters;
     const float d2Raw = anchor2.meters;
-    if (lastConsumedPollKnown && anchor1.pollStamp == lastConsumedPoll) { clearFreshPair(); return; }
-    if (!isfinite(d1) || !isfinite(d2Raw) || d1 <= 0.0f || d2Raw <= 0.0f ||
-        d1 > MAX_VALID_RANGE_M || d2Raw > MAX_VALID_RANGE_M) { clearFreshPair(); return; }
+    clearFreshPair(); // Moi cap chi dung mot lan.
+    if (!isfinite(d1) || !isfinite(d2Raw) || d1 <= 0 || d2Raw <= 0 ||
+        d1 > MAX_VALID_RANGE_M || d2Raw > MAX_VALID_RANGE_M) return;
+
+    const uint32_t now = millis();
     lastConsumedPoll = anchor1.pollStamp;
-    lastConsumedPollKnown = true;
-    clearFreshPair();
-    lastPairKnown = true;
+    lastConsumedPollKnown = lastPairKnown = true;
     lastPairMs = now;
-    targetTimedOut = false;
     ++pairedCount;
     if (DEBUG_LOG) {
-        Serial.print("PAIR,n="); Serial.print(pairedCount);
-        Serial.print(",d1_raw="); Serial.print(d1, 3);
-        Serial.print(",d2_raw="); Serial.print(d2Raw, 3);
-        Serial.print(",age1_ms="); Serial.print(uint32_t(now - anchor1.timeMs));
-        Serial.print(",age2_ms="); Serial.print(uint32_t(now - anchor2.timeMs) + anchor2.sourceAgeMs);
-        Serial.print(",uart_bad="); Serial.println(rejectedFrames);
+        Serial.printf("PAIR,n=%lu,d1_raw=%.3f,d2_raw=%.3f,age1_ms=%lu,age2_ms=%lu,uart_bad=%lu\n",
+                      (unsigned long)pairedCount, d1, d2Raw,
+                      (unsigned long)(now - anchor1.timeMs),
+                      (unsigned long)(now - anchor2.timeMs + anchor2.sourceAgeMs),
+                      (unsigned long)rejectedFrames);
     }
     if (!offsetCalibrated) {
-        collectCalibrationPair(d1, d2Raw, now);
+        collectCalibrationPair(d1, d2Raw, now); // Khi can offset, chi dung RAW.
         return;
     }
-    const float d2 = d2Raw + OFFSET_A2_M;
-    if (!isfinite(d2) || d2 <= 0.0f || d2 > MAX_VALID_RANGE_M) return;
-    if (ANCHOR_SPACING_M > 0.0f) calculateGeometry(d1, d2);
+    const float d2 = d2Raw + OFFSET_A2_M; // Bu A2 dung mot lan tai day.
+    if (!isfinite(d2) || d2 <= 0 || d2 > MAX_VALID_RANGE_M) return;
+    calculateGeometry(d1, d2);
 }
 
-void calculateGeometry(float d1, float d2)
-{
+// 6. GOC VA KALMAN: giu cong thuc va vung tre phan huong cua Tag cu.
+void calculateGeometry(float d1, float d2) {
     const float L = ANCHOR_SPACING_M;
-
-    if (L <= 0.0f)
-    {
-        return;
-    }
-
-    // Cho phep mot chut sai so do nhieu ranging.
+    if (L <= 0) return;
     const float TRIANGLE_TOLERANCE_M = 0.03f;
-
-    // Dieu kien ton tai tam giac.
-    if ((d1 + d2) < (L - TRIANGLE_TOLERANCE_M) ||
-        fabsf(d1 - d2) > (L + TRIANGLE_TOLERANCE_M))
-    {
-        if (DEBUG_LOG) Serial.print("GEOM_INVALID,d1=");
-        if (DEBUG_LOG) Serial.print(d1, 3);
-        if (DEBUG_LOG) Serial.print(",d2=");
-        if (DEBUG_LOG) Serial.println(d2, 3);
+    if (d1 + d2 < L - TRIANGLE_TOLERANCE_M || fabsf(d1 - d2) > L + TRIANGLE_TOLERANCE_M) {
+        if (DEBUG_LOG) Serial.printf("GEOM_INVALID,d1=%.3f,d2=%.3f\n", d1, d2);
         return;
     }
-
-    // Toa do tinh tu A1 theo truc A1 -> A2.
-    const float xFromA1 =
-        (d1 * d1 - d2 * d2 + L * L) / (2.0f * L);
-
-    float ySquared =
-        d1 * d1 - xFromA1 * xFromA1;
-
-    if (ySquared < -0.01f)
-    {
+    // Tam giac A1-A2-Tag: tim x tu A1, roi doi ve trung diem hai Anchor.
+    const float xFromA1 = (d1 * d1 - d2 * d2 + L * L) / (2.0f * L);
+    float ySquared = d1 * d1 - xFromA1 * xFromA1;
+    if (ySquared < -0.01f) {
         if (DEBUG_LOG) Serial.println("GEOM_INVALID,no_real_intersection");
         return;
     }
-
-    if (ySquared < 0.0f)
-    {
-        ySquared = 0.0f;
-    }
-
-    // Chon nghiem y > 0 = Tag o phia truoc xe.
-    const float y = sqrtf(ySquared);
-
-    // Doi goc toa do ve tam A1-A2.
-    const float x =
-        xFromA1 - (L * 0.5f);
-
-    // 0 do = thang truoc; duong = ve A2; am = ve A1.
-    const float angleDeg =
-        atan2f(x, y) * 180.0f / PI;
-
-    // Day la noi DUY NHAT them Kalman vao ket qua hinh hoc.
+    if (ySquared < 0) ySquared = 0;
+    const float y = sqrtf(ySquared); // Chi chon Tag o phia truoc xe.
+    const float x = xFromA1 - L * 0.5f;
+    const float angleDeg = atan2f(x, y) * 180.0f / PI;
+    // Goc am: trai/A1. Goc duong: phai/A2. 0 do: thang.
     if (isfinite(angleDeg)) updateFilteredDirection(angleDeg, d1, d2);
 }
 
-void updateFilteredDirection(float angleDeg, float d1, float d2)
-{
+void updateFilteredDirection(float angleDeg, float d1, float d2) {
     const uint32_t now = millis();
     const bool first = !filterReady || uint32_t(now - lastAngleMs) > FILTER_RESET_MS;
     if (first) {
@@ -418,66 +355,48 @@ void updateFilteredDirection(float angleDeg, float d1, float d2)
     addDirectionVote(directionIndex, d1, d2, filteredAngle, now);
 }
 
-void clearDirectionVotes()
-{
+// 7. VOTE: moi 500 ms chon huong nhieu phieu nhat.
+void clearDirectionVotes() {
     for (uint8_t i = 0; i < DIRECTION_COUNT; ++i) {
         directionVotes[i] = DirectionVote{};
     }
     voteSequence = 0;
 }
 
-void flushDirectionVotes(uint32_t now)
-{
+void flushDirectionVotes(uint32_t now) {
     if (!offsetCalibrated) return;
     const uint32_t elapsed = uint32_t(now - voteWindowStartMs);
     if (elapsed < VOTE_WINDOW_MS) return;
-
-    // Neu loop bi dung qua ca mot cua so tiep theo, khong phat lai ket qua cu.
-    if (elapsed >= 2 * VOTE_WINDOW_MS) clearDirectionVotes();
+    if (elapsed >= 2 * VOTE_WINDOW_MS) clearDirectionVotes(); // Loop dung lau: bo phieu cu.
 
     int winner = -1;
     for (uint8_t i = 0; i < DIRECTION_COUNT; ++i) {
         if (directionVotes[i].count == 0) continue;
-        if (winner < 0 ||
-            directionVotes[i].count > directionVotes[winner].count ||
+        if (winner < 0 || directionVotes[i].count > directionVotes[winner].count ||
             (directionVotes[i].count == directionVotes[winner].count &&
-             directionVotes[i].lastOrder > directionVotes[winner].lastOrder)) {
-            winner = i;
-        }
+             directionVotes[i].lastOrder > directionVotes[winner].lastOrder)) winner = i;
     }
-
-    // Chi uu tien ket qua truoc neu no cung dang co so phieu cao nhat.
+    // Hoa phieu: giu huong da xuat neu no cung co so phieu cao nhat.
     if (winner >= 0 && lastVotedDirection >= 0 &&
-        directionVotes[lastVotedDirection].count == directionVotes[winner].count) {
+        directionVotes[lastVotedDirection].count == directionVotes[winner].count)
         winner = lastVotedDirection;
-    }
 
-    if (winner < 0) {
-        Serial.println(PRINT_DETAILS ? "KHONG CO DU LIEU | valid=0" : "KHONG CO DU LIEU");
-        lastVotedDirection = -1;
-    } else {
+    if (winner < 0) Serial.println(PRINT_DETAILS ? "KHONG CO DU LIEU | valid=0" : "KHONG CO DU LIEU");
+    else {
         Serial.print(DIRECTION_NAMES[winner]);
         if (PRINT_DETAILS) {
-            // Lay mau moi nhat CUA HUONG THANG VOTE, khong lay mau cua huong khac.
-            Serial.print(" | dA1=");
-            Serial.print(directionVotes[winner].d1, 3);
-            Serial.print(" m | dA2=");
-            Serial.print(directionVotes[winner].d2, 3);
-            Serial.print(" m | goc=");
-            Serial.print(directionVotes[winner].angleDeg, 1);
-            Serial.print(" do | valid=1");
+            const DirectionVote &vote = directionVotes[winner];
+            Serial.printf(" | dA1=%.3f m | dA2=%.3f m | goc=%.1f do | valid=1",
+                          vote.d1, vote.d2, vote.angleDeg);
         }
         Serial.println();
-        lastVotedDirection = winner;
     }
-
+    lastVotedDirection = winner;
     clearDirectionVotes();
-    // Giu moc cua so; moi phieu thuoc dung mot khoang [bat dau, bat dau + 500).
     voteWindowStartMs += (elapsed / VOTE_WINDOW_MS) * VOTE_WINDOW_MS;
 }
 
-void addDirectionVote(int direction, float d1, float d2, float angleDeg, uint32_t now)
-{
+void addDirectionVote(int direction, float d1, float d2, float angleDeg, uint32_t now) {
     // Chot cua so cu TRUOC khi nhan mau tai moc 500 ms vao cua so moi.
     flushDirectionVotes(now);
     if (direction < 0 || direction >= DIRECTION_COUNT) return;
@@ -490,19 +409,15 @@ void addDirectionVote(int direction, float d1, float d2, float angleDeg, uint32_
     vote.angleDeg = angleDeg;
 }
 
-void resetStartupCalibration()
-{
+// 8. CALIBRATION: on dinh 2 s, thu >= 30 cap trong >= 3 s.
+void resetStartupCalibration() {
     calibrationStarted = false;
-    calibrationCollecting = false;
     calibrationPairs = 0;
-    calibrationMeanD1 = 0.0f;
-    calibrationMeanD2 = 0.0f;
-    calibrationM2D1 = 0.0f;
-    calibrationM2D2 = 0.0f;
+    calibrationMeanD1 = calibrationMeanD2 = 0;
+    calibrationM2D1 = calibrationM2D2 = 0;
 }
 
-void collectCalibrationPair(float d1Raw, float d2Raw, uint32_t now)
-{
+void collectCalibrationPair(float d1Raw, float d2Raw, uint32_t now) {
     if (offsetCalibrated) return;
     if (!isfinite(d1Raw) || !isfinite(d2Raw) || d1Raw <= 0.0f || d2Raw <= 0.0f ||
         d1Raw > MAX_VALID_RANGE_M || d2Raw > MAX_VALID_RANGE_M) return;
@@ -522,10 +437,7 @@ void collectCalibrationPair(float d1Raw, float d2Raw, uint32_t now)
     calibrationLastPairMs = now;
     if (uint32_t(now - calibrationStartMs) < CALIB_SETTLE_MS) return;
 
-    if (!calibrationCollecting) {
-        calibrationCollecting = true;
-        calibrationCollectStartMs = now;
-    }
+    if (calibrationPairs == 0) calibrationCollectStartMs = now;
 
     // Trung binh va phuong sai Welford, khong can mang hay thu vien them.
     ++calibrationPairs;
@@ -545,10 +457,7 @@ void collectCalibrationPair(float d1Raw, float d2Raw, uint32_t now)
     const float std1 = sqrtf(variance1 > 0.0f ? variance1 : 0.0f);
     const float std2 = sqrtf(variance2 > 0.0f ? variance2 : 0.0f);
     if (std1 > CALIB_MAX_STD_M || std2 > CALIB_MAX_STD_M) {
-        Serial.print("CALIB_CHUA_ON_DINH,sdA1=");
-        Serial.print(std1, 3);
-        Serial.print(",sdA2=");
-        Serial.println(std2, 3);
+        Serial.printf("CALIB_CHUA_ON_DINH,sdA1=%.3f,sdA2=%.3f\n", std1, std2);
         Serial.println("CALIB: GIU TAG YEN, TU LAY LAI MAU.");
         resetStartupCalibration();
         return;
@@ -567,18 +476,12 @@ void collectCalibrationPair(float d1Raw, float d2Raw, uint32_t now)
     resetMeasurements();
     voteWindowStartMs = now;
 
-    Serial.print("CALIB_OK | OFFSET_A2_M=");
-    Serial.print(OFFSET_A2_M, 4);
-    Serial.print(" m | dA1_raw_tb=");
-    Serial.print(calibrationMeanD1, 3);
-    Serial.print(" m | dA2_raw_tb=");
-    Serial.print(calibrationMeanD2, 3);
-    Serial.println(" m");
+    Serial.printf("CALIB_OK | OFFSET_A2_M=%.4f m | dA1_raw_tb=%.3f m | dA2_raw_tb=%.3f m\n",
+                  OFFSET_A2_M, calibrationMeanD1, calibrationMeanD2);
     Serial.println("RUN: DA CHOT OFFSET, CO THE DI CHUYEN.");
 }
 
-void serviceStartupCalibration(uint32_t now)
-{
+void serviceStartupCalibration(uint32_t now) {
     if (offsetCalibrated) return;
     if (calibrationStarted &&
         (uint32_t(now - calibrationLastPairMs) > CALIB_MAX_PAIR_GAP_MS ||
@@ -590,18 +493,14 @@ void serviceStartupCalibration(uint32_t now)
 
     if (uint32_t(now - calibrationLastStatusMs) < 1000) return;
     calibrationLastStatusMs = now;
-    if (!hasRecentAnchorData(now)) {
+    if (!lastPairKnown || uint32_t(now - lastPairMs) > CALIB_MAX_PAIR_GAP_MS) {
         Serial.println("CALIB_CHO_A2_A1: CHUA CO CAP CUNG POLL CON MOI.");
     } else if (!calibrationStarted) {
         Serial.println("CALIB_CHO_CAP_RANGE_HOP_LE.");
-    } else if (!calibrationCollecting) {
+    } else if (calibrationPairs == 0) {
         Serial.println("CALIB_CHO_ON_DINH: GIU TAG YEN.");
     } else {
-        Serial.print("CALIB_LAY_MAU,n=");
-        Serial.print(calibrationPairs);
-        Serial.print(",dA1_raw_tb=");
-        Serial.print(calibrationMeanD1, 3);
-        Serial.print(",dA2_raw_tb=");
-        Serial.println(calibrationMeanD2, 3);
+        Serial.printf("CALIB_LAY_MAU,n=%lu,dA1_raw_tb=%.3f,dA2_raw_tb=%.3f\n",
+                      (unsigned long)calibrationPairs, calibrationMeanD1, calibrationMeanD2);
     }
 }

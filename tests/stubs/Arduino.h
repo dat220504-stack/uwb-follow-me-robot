@@ -1,5 +1,7 @@
 #pragma once
 #include <cstdint>
+#include <cstdio>
+#include <cstdarg>
 #include <cmath>
 #include <deque>
 #include <vector>
@@ -32,6 +34,16 @@ public:
         tx.insert(tx.end(), data, data + size); return size;
     }
     void print(const char *text) { output += text; }
+    size_t printf(const char *format, ...) {
+        char text[512];
+        va_list args;
+        va_start(args, format);
+        const int size = std::vsnprintf(text, sizeof(text), format, args);
+        va_end(args);
+        if (size <= 0) return 0;
+        output += text;
+        return size_t(size);
+    }
     template<class T> void print(T value, int format = 0) {
         std::ostringstream stream;
         if constexpr (std::is_floating_point_v<T>) stream << std::fixed << std::setprecision(format);
