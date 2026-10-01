@@ -1,0 +1,60 @@
+# Kết quả kiểm tra chuyển UART — 02/10/2026
+
+## Source thư viện
+
+Dùng đúng `DW1000.zip` người dùng đã cung cấp trong dự án Điện. Bản tìm thấy trên máy có 1.286.019 byte, kiểm tra CRC toàn bộ ZIP thành công. Mã SHA256 của `DW1000Ranging.h`, `DW1000Ranging.cpp` và `library.properties` trùng các mã đã ghi khi kiểm tra tệp đính kèm trước đó. Source được giải nén riêng để biên dịch, không sửa và không đưa thư viện bên thứ ba vào repo.
+
+| File | SHA256 |
+|---|---|
+| `DW1000.zip` | `b49b7e41eac0d9d0a963fbb32fd967a6338e7151708ac3e1b7912dbad6893a04` |
+| `src/DW1000Ranging.h` | `a95f9056e10d779ee374dac7f10587ea731bf35e2eb4bf7faadbbc030153f11a` |
+| `src/DW1000Ranging.cpp` | `831baad90246694fce2bfbf01c26c9ced3fcedf91b3872e0c767c9e2d26f8a83` |
+| `library.properties` | `d9de8487632a85b2cfabe9c5946480cbc5b6d9c2743247750e2756f109fd86ba` |
+
+Đã đọc source để xác nhận:
+
+- Short address của Tag là `0x007D` từ hai byte đầu EUI, thứ tự byte thấp trước.
+- Anchor có `getRange()`, `getRXPower()` và `timePollSent` public trong `DW1000Device`.
+- Tag chép timestamp POLL chung vào các mục của gói RANGE; Anchor đọc timestamp trước khi tính range và gọi callback (`DW1000Ranging.cpp`, phần xử lý RANGE và `transmitRange`).
+- Callback range chạy trong xử lý `DW1000Ranging.loop()` và được gọi sau khi đã cập nhật range; sketch chỉ chụp mẫu trong callback.
+- Thư viện giữ reply delay mặc định 7000 µs và lập lịch theo index. Sketch không còn loại mẫu theo reply slot.
+- Antenna delay đã set được dùng khi commit configuration; A1/A2 giữ 16461/16450, Tag giữ mặc định 16384.
+
+## Biên dịch ESP32 thực
+
+Arduino CLI **1.2.0**, ESP32 Arduino core **3.3.11** có sẵn trên máy, FQBN `esp32:esp32:esp32`. Biên dịch bằng thư viện giải nén ở trên, không dùng các stub test.
+
+| Sketch | Kết quả | Flash | RAM tĩnh |
+|---|---|---:|---:|
+| Anchor1 gốc, trước khi sửa | Thành công | 304.467 byte | 23.668 byte |
+| Tag sau chuyển UART | Thành công | 303.435 byte | 23.700 byte |
+| Anchor1 sau chuyển UART | Thành công | 310.731 byte | 24.196 byte |
+| Anchor2 sau chuyển UART | Thành công | 304.343 byte | 23.812 byte |
+
+Lệnh mẫu, thay đường dẫn thư viện bằng bản đã kiểm tra của dự án:
+
+```powershell
+arduino-cli compile --fqbn esp32:esp32:esp32 --library 'C:\path\to\DW1000' firmware\Tag
+arduino-cli compile --fqbn esp32:esp32:esp32 --library 'C:\path\to\DW1000' firmware\Anchor1
+arduino-cli compile --fqbn esp32:esp32:esp32 --library 'C:\path\to\DW1000' firmware\Anchor2
+```
+
+## Kiểm tra logic chạy trên máy
+
+Dùng Zig **0.14.1** với C++17 trên Windows, `-Wall -Wextra`. Các test include trực tiếp sketch; giả lập phần cứng/đồng hồ/UART ở biên I/O. Hai bản `UwbUart.h` đã được kiểm tra giống nhau.
+
+| Bộ kiểm tra | Kết quả |
+|---|---|
+| Anchor1: ghép cặp, parser, restart, calibration, hình học, vote, timeout | PASS |
+| Anchor2: chụp mẫu, mã hóa, UART bận, tuổi mẫu, range lỗi, mất Tag | PASS |
+| Tag: A2 trước A1, loại Anchor lạ, kết nối lại, callback chỉ lưu sự kiện | PASS |
+
+Các tình huống đã chạy gồm A1 đến trước/A2 đến trước, sai timestamp POLL, cặp dùng lại, tràn timestamp/sequence, mẫu cũ, CRC sai, mất byte, magic giả, sai Tag, gói dở quá hạn, sequence cũ/lặp, backlog UART sau khi loop A1 ngừng, A2 khởi động lại, giữ offset khi mất/kết nối lại Tag, calibration ổn định/không ổn định, bù offset một lần, dấu góc trái/phải, tam giác vô lý, hòa phiếu, cửa sổ trống và mất mục tiêu.
+
+Thực hiện lại theo [tests/README.md](../tests/README.md).
+
+## Phần chưa kiểm tra
+
+**Chưa nạp hoặc thử ba bo ESP32 + BU01 thật.** Chưa đo độ trễ UART/loop thực, tỷ lệ cặp ghép được, nhiễu ranging, khả năng tìm lại Anchor và sai số góc khi Tag di chuyển. Không có dữ liệu để kết luận các chỉ tiêu phần cứng này. Cần thử theo [docs/UART.md](UART.md).
+
+Bản này chỉ xuất Serial ở A1. Điều khiển motor, LiDAR và gửi kết quả sang MCU chính chưa triển khai.

@@ -1,41 +1,36 @@
 # Xe bám theo người sử dụng UWB
 
-Đồ án xe tự hành hỗ trợ mua sắm dùng 3 module BU01 (DW1000), mỗi module nối với một ESP32 thường. Người mang Tag; hai Anchor đặt trên xe.
+Đồ án xe tự hành hỗ trợ mua sắm dùng 3 module BU01 (DW1000), mỗi module nối với một ESP32 thường. Người mang Tag; hai Anchor đặt trên xe. Nhánh `feature/anchor-uart-processing` chuyển phần xử lý sang **ESP32 A1**, nhận khoảng cách A2 qua UART.
 
-## Thay đổi trên nhánh phát triển
+| Node | Sketch | Công việc |
+|---|---|---|
+| Tag trên người | [Tag.ino](firmware/Tag/Tag.ino) | Giữ giao thức UWB và thứ tự A2 trước, A1 sau |
+| A1 bên trái xe | [Anchor1.ino](firmware/Anchor1/Anchor1.ino) | Nhận d1, nhận UART d2, ghép lượt đo, auto-offset, hình học, Kalman, vote |
+| A2 bên phải xe | [Anchor2.ino](firmware/Anchor2/Anchor2.ino) | Lưu d2 RAW trong callback, gửi UART ngoài callback |
 
-Đã bỏ điều kiện loại mẫu dựa trên reply time chính xác 7000/21000 µs theo yêu cầu chủ dự án. Giữ thứ tự A2 trước A1, kiểm tra range, cửa sổ ghép 80 ms, auto-offset, Kalman và vote. Reply time vẫn được lưu/in khi bật debug; lịch phát do thư viện quản lý không thay đổi.
+Mỗi thư mục Anchor có `UwbUart.h`; mở/nạp cả thư mục sketch. Bản gốc nằm trên `main` tại [commit c435ee5](https://github.com/dat220504-stack/uwb-follow-me-robot/commit/c435ee53ac9a2b7701af0314960180eef9f1a5f2). [Markdown Tag gốc](docs/source/Tag_original.md) được giữ để đối chiếu.
 
-Offset bù sai lệch khoảng cách, không thay thế kiểm soát thứ tự đo hoặc ghép đúng cặp mẫu. Bước chuyển dữ liệu qua UART và tính góc tại A1 chưa được triển khai.
-
-## Phiên bản gốc
-
-Đây là code do chủ dự án cung cấp ngày 02/10/2026 (giờ Việt Nam), trước khi chuyển xử lý góc sang Anchor 1 qua UART.
-
-- [Tag](firmware/Tag/Tag.ino): đo với hai Anchor, tự cân OFFSET A2 lúc khởi động, tính góc, lọc Kalman và vote hướng mỗi 500 ms.
-- [Anchor 1](firmware/Anchor1/Anchor1.ino): đo và in RAW range, antenna delay **16461**.
-- [Anchor 2](firmware/Anchor2/Anchor2.ino): đo và in RAW range, antenna delay **16450**.
-- [File Tag gốc](docs/source/Tag_original.md): giữ nguyên tệp Markdown được cung cấp để đối chiếu.
-
-Chưa triển khai UART giữa hai Anchor, điều khiển động cơ hoặc xử lý LiDAR trong phiên bản này. Các sketch không có Wi-Fi/OTA/ESP-NOW.
-
-## Cấu hình đang dùng trong code
+## Cấu hình
 
 | Thông số | Giá trị |
 |---|---|
 | Mode cả ba node | `DW1000.MODE_SHORTDATA_FAST_LOWPOWER` |
-| Tag EUI | `7D:00:22:EA:82:60:3B:9C` |
-| A1 EUI / short address dự kiến | `86:17:5B:D5:A9:9A:E2:9C` / `0x1786` |
-| A2 EUI / short address dự kiến | `87:17:5B:D5:A9:9A:E2:9C` / `0x1787` |
-| Khoảng cách hai Anchor trong Tag | **0,50 m** |
-| Cửa sổ ghép hai mẫu | 80 ms |
-| Reply time dự kiến của thư viện (không kiểm tra để loại mẫu) | A2: 7000 µs; A1: 21000 µs |
-| Thứ tự danh sách Tag yêu cầu | A2 index 0; A1 index 1 |
-| Serial Monitor | 115200 baud |
+| Tag EUI / short address | `7D:00:22:EA:82:60:3B:9C` / `0x007D` |
+| A1 EUI / short address | `86:17:5B:D5:A9:9A:E2:9C` / `0x1786` |
+| A2 EUI / short address | `87:17:5B:D5:A9:9A:E2:9C` / `0x1787` |
+| Antenna delay | Tag: mặc định **16384**; A1: **16461**; A2: **16450** |
+| Khoảng cách tâm anten A1–A2 | **0,50 m** |
+| Tuổi mẫu tối đa để ghép | **80 ms**, cùng timestamp POLL của Tag |
+| Vote hướng / quá hạn mục tiêu | **500 ms** / **500 ms** sau cặp đo cuối |
+| Serial Monitor / UART A2 → A1 | **115200 baud** / **115200 baud, 8N1** |
 
-Chú thích đầu hai file Anchor còn ghi `MODE_LONGDATA_RANGE_LOWPOWER`, nhưng lệnh chạy thực tế dùng **SHORTDATA_FAST_LOWPOWER**. Giữ nguyên bản gửi; bảng trên phản ánh lệnh chạy thực tế. Antenna delay là giá trị riêng của bộ phần cứng này, không phải giá trị dùng chung cho mọi BU01.
+Tag giữ A2 ở index 0, A1 ở index 1. Đã bỏ điều kiện loại mẫu theo reply slot `7000/21000 µs`; lịch phát của thư viện được giữ. Auto-offset cân hai khoảng cách, còn timestamp POLL xác định hai mẫu thuộc cùng lượt đo.
 
-## Nối ESP32 với BU01
+Giữ nguyên thư viện `DW1000.zip` người dùng cung cấp, không thêm thư viện Kalman. Bản thư viện và kết quả kiểm tra được ghi trong [docs/VALIDATION.md](docs/VALIDATION.md).
+
+## Nối dây
+
+ESP32 ↔ BU01 trên cả ba node:
 
 | Tín hiệu BU01 | GPIO ESP32 |
 |---|---:|
@@ -46,24 +41,31 @@ Chú thích đầu hai file Anchor còn ghi `MODE_LONGDATA_RANGE_LOWPOWER`, như
 | RST | 27 |
 | IRQ | 34 |
 
-Cấu hình chân dành cho ESP32 thường, không dùng nguyên trạng cho ESP32-C3. Cấp nguồn theo đúng module/adapter đang dùng và nối GND chung giữa ESP32 với BU01.
+UART giữa hai ESP32:
+
+```text
+A2 GPIO17 (TX2) ─────────► A1 GPIO16 (RX2)
+A2 GND         ────────── A1 GND
+```
+
+Đây là UART mức **3,3 V**. Cấu hình dành cho ESP32 thường; GPIO16/17 phải còn trống trên bo đang dùng. Chân BU01, mode và antenna delay được giữ như bản nguồn. [docs/UART.md](docs/UART.md) mô tả gói, kiểm soát tuổi mẫu và cách thử.
 
 ## Nạp và chạy
 
-1. Cài hỗ trợ ESP32 cho Arduino IDE và đúng bản thư viện `DW1000`/`DW1000Ranging` đã dùng với phần cứng. Bản thư viện cụ thể chưa được đưa vào repo này.
-2. Mở riêng từng sketch trong `firmware/`, chọn đúng board/cổng rồi nạp vào node tương ứng.
-3. Đặt A1 bên trái, A2 bên phải khi nhìn từ xe về phía trước; khoảng cách tâm anten phải khớp `ANCHOR_SPACING_M`.
-4. Mỗi lần bật/reset Tag, đặt Tag đứng yên chính giữa phía trước hai Anchor, cách trung điểm 1 m theo quy trình của code.
-5. Chờ `CALIB_OK` rồi mới di chuyển. Tag cần ổn định 2 s, thu ít nhất 30 cặp trong ít nhất 3 s; thời gian thực tế phụ thuộc tốc độ đo.
-6. Đọc nhãn hướng, `dA1`, `dA2`, góc; khi không có mẫu hợp lệ trong cửa sổ vote, Tag in `KHONG CO DU LIEU`.
+1. Cài hỗ trợ board ESP32 và đúng thư viện `DW1000` đã dùng với bộ BU01 này.
+2. Nạp ba thư mục sketch tương ứng với Tag, A1 và A2. Hai Anchor cần có file `UwbUart.h` đi cùng `.ino`.
+3. Nối UART/GND như trên; đặt A1 bên trái, A2 bên phải khi nhìn từ xe ra phía trước, cách tâm anten 0,50 m.
+4. Mỗi lần bật/reset **A1**, đặt Tag đứng yên chính giữa phía trước hai Anchor, cách trung điểm khoảng 1 m. A1 chờ ổn định 2 s rồi lấy ít nhất 30 cặp trong ít nhất 3 s; độ lệch chuẩn mỗi khoảng cách phải ≤ 0,10 m.
+5. Đọc Serial Monitor của **A1**, chờ `CALIB_OK` rồi mới di chuyển. A1 in hướng thắng vote cùng `dA1`, `dA2`, góc và `valid=1`; cửa sổ không có mẫu hợp lệ in `KHONG CO DU LIEU | valid=0`.
+6. Tắt/bật lại Tag hoặc A2 sau khi calibration hoàn thành: A1 giữ offset trong RAM, xóa mẫu và lịch sử hướng cũ rồi đợi cặp mới. Reset A1 sẽ calibration lại.
 
-Auto-offset chỉ cân bằng hai khoảng cách khi Tag nằm giữa, không thay thế calibration khoảng cách tuyệt đối. Hai Anchor và giả thiết hình học hiện tại không phân biệt được Tag phía trước hay phía sau xe; code chọn nghiệm phía trước.
+`PRINT_DETAILS=false` ở A1 giữ cách in chỉ nhãn hướng như bản nguồn. `DEBUG_LOG=true` ở A1 bật thông tin cặp RAW, tuổi mẫu và lỗi CRC; ở A2 bật log gói UART. Chưa có Wi-Fi, OTA, ESP-NOW, điều khiển motor hoặc xử lý LiDAR.
 
-## Nguồn và trạng thái kiểm tra
+Auto-offset không thay thế calibration khoảng cách tuyệt đối. Với hai Anchor, hình học hiện tại chọn nghiệm phía trước và không phân biệt Tag ở trước hay sau xe.
 
-Tag `.ino` được khôi phục từ Markdown bằng cách bỏ escape `\#`, `\*`, `\<`, đổi khoảng trắng NBSP sang khoảng trắng thường và gọn dòng trống. Không sửa logic, tham số hoặc API. Hai file Anchor giữ nội dung người dùng cung cấp.
+## Kiểm tra
 
-Lần nhập này kiểm tra nội dung và cấu hình; **chưa biên dịch cho ESP32 hoặc thử trên BU01**. Chú thích kiểm tra cũ trong code là thông tin của bản nguồn, không phải kết quả kiểm tra mới. Cần xác nhận đúng phiên bản thư viện, đặc biệt các API danh sách thiết bị và reply time.
+[docs/VALIDATION.md](docs/VALIDATION.md) ghi bộ công cụ, mã kiểm tra thư viện, kết quả biên dịch và các bài kiểm tra logic chạy trên máy. Các kiểm tra dùng dữ liệu giả lập ở biên I/O; độ ổn định UWB/UART và sai số góc cần thử trên phần cứng theo [docs/UART.md](docs/UART.md).
 
 Nguồn tham khảo của dự án:
 
@@ -71,4 +73,4 @@ Nguồn tham khảo của dự án:
 - [Makerfabs ESP32 UWB](https://github.com/Makerfabs/Makerfabs-ESP32-UWB)
 - [jremington UWB Indoor Localization](https://github.com/jremington/UWB-Indoor-Localization_Arduino)
 
-Repo này chưa kèm thư viện bên thứ ba và chưa chỉ định giấy phép cho code dự án.
+Repo chưa kèm thư viện bên thứ ba và chưa chỉ định giấy phép cho code dự án.
