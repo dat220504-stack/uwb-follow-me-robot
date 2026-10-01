@@ -8,7 +8,7 @@
 | A1 bên trái xe | [Anchor1.ino](firmware/Anchor1/Anchor1.ino) | Nhận d1, nhận UART d2, ghép lượt đo, auto-offset, hình học, Kalman, vote |
 | A2 bên phải xe | [Anchor2.ino](firmware/Anchor2/Anchor2.ino) | Lưu d2 RAW trong callback, gửi UART ngoài callback |
 
-Mỗi thư mục Anchor có `UwbUart.h`; mở/nạp cả thư mục sketch. Bản gốc nằm trên `main` tại [commit c435ee5](https://github.com/dat220504-stack/uwb-follow-me-robot/commit/c435ee53ac9a2b7701af0314960180eef9f1a5f2). [Markdown Tag gốc](docs/source/Tag_original.md) được giữ để đối chiếu.
+Phần UART nằm ngay trong hai sketch Anchor; không cần file hỗ trợ `UwbUart.h`. Bản gốc nằm trên `main` tại [commit c435ee5](https://github.com/dat220504-stack/uwb-follow-me-robot/commit/c435ee53ac9a2b7701af0314960180eef9f1a5f2). [Markdown Tag gốc](docs/source/Tag_original.md) được giữ để đối chiếu.
 
 ## Cấu hình
 
@@ -53,13 +53,13 @@ A2 GND         ────────── A1 GND
 ## Nạp và chạy
 
 1. Cài hỗ trợ board ESP32 và đúng thư viện `DW1000` đã dùng với bộ BU01 này.
-2. Nạp ba thư mục sketch tương ứng với Tag, A1 và A2. Hai Anchor cần có file `UwbUart.h` đi cùng `.ino`.
+2. Mở và nạp ba file `.ino` tương ứng với Tag, A1 và A2.
 3. Nối UART/GND như trên; đặt A1 bên trái, A2 bên phải khi nhìn từ xe ra phía trước, cách tâm anten 0,50 m.
 4. Mỗi lần bật/reset **A1**, đặt Tag đứng yên chính giữa phía trước hai Anchor, cách trung điểm khoảng 1 m. A1 chờ ổn định 2 s rồi lấy ít nhất 30 cặp trong ít nhất 3 s; độ lệch chuẩn mỗi khoảng cách phải ≤ 0,10 m.
 5. Đọc Serial Monitor của **A1**, chờ `CALIB_OK` rồi mới di chuyển. A1 in hướng thắng vote cùng `dA1`, `dA2`, góc và `valid=1`; cửa sổ không có mẫu hợp lệ in `KHONG CO DU LIEU | valid=0`.
-6. Tắt/bật lại Tag hoặc A2 sau khi calibration hoàn thành: A1 giữ offset trong RAM, xóa mẫu và lịch sử hướng cũ rồi đợi cặp mới. Reset A1 sẽ calibration lại.
+6. Tắt/bật lại Tag hoặc A2 sau khi calibration hoàn thành: A1 giữ offset trong RAM. Khi nhận báo mất/kết nối lại Tag hoặc không có cặp mới quá 500 ms, A1 xóa lịch sử hướng cũ rồi đợi cặp mới. Reset A1 sẽ calibration lại.
 
-`PRINT_DETAILS=false` ở A1 giữ cách in chỉ nhãn hướng như bản nguồn. `DEBUG_LOG=true` ở A1 bật thông tin cặp RAW, tuổi mẫu và lỗi CRC; ở A2 bật log gói UART. Chưa có Wi-Fi, OTA, ESP-NOW, điều khiển motor hoặc xử lý LiDAR.
+`PRINT_DETAILS=false` ở A1 giữ cách in chỉ nhãn hướng như bản nguồn. `DEBUG_LOG=true` ở A1 bật thông tin cặp RAW, tuổi mẫu và lỗi dòng UART; ở A2 bật log dòng UART. Chưa có Wi-Fi, OTA, ESP-NOW, điều khiển motor hoặc xử lý LiDAR.
 
 Auto-offset không thay thế calibration khoảng cách tuyệt đối. Với hai Anchor, hình học hiện tại chọn nghiệm phía trước và không phân biệt Tag ở trước hay sau xe.
 

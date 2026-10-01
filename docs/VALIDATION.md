@@ -1,4 +1,6 @@
-# Kết quả kiểm tra chuyển UART — 02/10/2026
+# Kết quả kiểm tra UART đơn giản — 02/10/2026
+
+Bản hiện tại dùng dòng chữ trong hai sketch Anchor, đã bỏ hai file `UwbUart.h`. Phần hình học, Kalman, vote và calibration từ `calculateGeometry()` đến cuối A1 đã được đối chiếu với bản trước và giữ nguyên. Cấu hình UWB, chân nối và antenna delay được giữ nguyên.
 
 ## Source thư viện
 
@@ -26,10 +28,11 @@ Arduino CLI **1.2.0**, ESP32 Arduino core **3.3.11** có sẵn trên máy, FQBN 
 
 | Sketch | Kết quả | Flash | RAM tĩnh |
 |---|---|---:|---:|
-| Anchor1 gốc, trước khi sửa | Thành công | 304.467 byte | 23.668 byte |
-| Tag sau chuyển UART | Thành công | 303.435 byte | 23.700 byte |
-| Anchor1 sau chuyển UART | Thành công | 310.731 byte | 24.196 byte |
-| Anchor2 sau chuyển UART | Thành công | 304.343 byte | 23.812 byte |
+| Tag hiện tại | Thành công | 303.435 byte | 23.700 byte |
+| Anchor1 — UART dòng chữ | Thành công | 328.599 byte | 24.188 byte |
+| Anchor2 — UART dòng chữ | Thành công | 304.175 byte | 23.804 byte |
+
+Số liệu lịch sử: Anchor1 gốc dùng 304.467 byte flash / 23.668 byte RAM. Bản UART nhị phân tại commit `3286a96` dùng 310.731 / 24.196 byte ở A1 và 304.343 / 23.812 byte ở A2. Code dòng chữ dễ đọc hơn nhưng `sscanf()` làm flash A1 tăng; các sketch vẫn nằm trong giới hạn board.
 
 Lệnh mẫu, thay đường dẫn thư viện bằng bản đã kiểm tra của dự án:
 
@@ -41,15 +44,15 @@ arduino-cli compile --fqbn esp32:esp32:esp32 --library 'C:\path\to\DW1000' firmw
 
 ## Kiểm tra logic chạy trên máy
 
-Dùng Zig **0.14.1** với C++17 trên Windows, `-Wall -Wextra`. Các test include trực tiếp sketch; giả lập phần cứng/đồng hồ/UART ở biên I/O. Hai bản `UwbUart.h` đã được kiểm tra giống nhau.
+Dùng Zig **0.14.1** với C++17 trên Windows, `-Wall -Wextra`. Các test include trực tiếp sketch; giả lập phần cứng/đồng hồ/UART ở biên I/O. Đã chạy lại cả ba bộ kiểm tra với bản UART dòng chữ.
 
 | Bộ kiểm tra | Kết quả |
 |---|---|
-| Anchor1: ghép cặp, parser, restart, calibration, hình học, vote, timeout | PASS |
-| Anchor2: chụp mẫu, mã hóa, UART bận, tuổi mẫu, range lỗi, mất Tag | PASS |
+| Anchor1: ghép cặp, parser dòng chữ, tuổi mẫu, calibration, hình học, vote, timeout | PASS |
+| Anchor2: chụp mẫu, dòng gửi, UART bận, tuổi mẫu, range lỗi, mất Tag | PASS |
 | Tag: A2 trước A1, loại Anchor lạ, kết nối lại, callback chỉ lưu sự kiện | PASS |
 
-Các tình huống đã chạy gồm A1 đến trước/A2 đến trước, sai timestamp POLL, cặp dùng lại, tràn timestamp/sequence, mẫu cũ, CRC sai, mất byte, magic giả, sai Tag, gói dở quá hạn, sequence cũ/lặp, backlog UART sau khi loop A1 ngừng, A2 khởi động lại, giữ offset khi mất/kết nối lại Tag, calibration ổn định/không ổn định, bù offset một lần, dấu góc trái/phải, tam giác vô lý, hòa phiếu, cửa sổ trống và mất mục tiêu.
+Các tình huống đã chạy gồm A1 đến trước/A2 đến trước, sai timestamp POLL, cặp dùng lại, tràn timestamp 40 bit, mẫu cũ và biên 80 ms, checksum sai, mất byte, ký tự nhiễu, sai nguồn, số âm/quá giới hạn hoặc dư ký tự, dòng dở quá hạn, tràn dòng, dòng lặp không làm mới tuổi mẫu, backlog UART sau khi loop A1 ngừng hoặc RX tích quá nhiều, giữ offset khi mất/kết nối lại Tag, calibration ổn định/không ổn định, bù offset một lần, dấu góc trái/phải, tam giác vô lý, hòa phiếu, cửa sổ trống và mất mục tiêu.
 
 Thực hiện lại theo [tests/README.md](../tests/README.md).
 

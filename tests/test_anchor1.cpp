@@ -7,10 +7,10 @@ void resetTest() {
     offsetCalibrated = false;
     OFFSET_A2_M = 0.0f;
     resetMeasurements();
-    anchor1 = {}; anchor2 = {}; pendingLocal = {};
+    anchor1 = {}; anchor2 = {};
     localTagLost = localTagAdded = false;
-    remoteSessionKnown = false;
-    uartParser = {};
+    uartLength = 0; uartReading = false; uartLineStartMs = fakeNow;
+    lastRemotePollKnown = false; lastRemotePoll = 0;
     lastUartServiceMs = fakeNow;
     discardUartBacklog = false;
     pairedCount = rejectedFrames = 0;
@@ -20,27 +20,27 @@ void resetTest() {
     DW1000Ranging.device = {};
 }
 
-UwbLink::Frame remote(uint64_t poll, uint32_t seq = 1, int32_t mm = 1100) {
-    UwbLink::Frame frame;
-    frame.bootId = 42; frame.sequence = seq; frame.pollStamp = poll;
-    frame.rangeMm = mm; frame.rxDb10 = -701; frame.valid = true;
-    return frame;
+// Build test input independently of the firmware's checksum/parser.
+std::string packet(const std::string &payload) {
+    unsigned int checksum = 0;
+    for (unsigned char c : payload) checksum ^= c;
+    char suffix[8]; snprintf(suffix, sizeof(suffix), "*%02X\n", checksum);
+    return "$" + payload + suffix;
+}
+
+std::string remote(uint64_t poll, long mm = 1100, unsigned int age = 0, int valid = 1) {
+    return packet("A2," + std::to_string(poll) + "," + std::to_string(mm) + "," +
+                  std::to_string(age) + "," + std::to_string(valid));
 }
 
 void local(uint64_t poll, float range = 1.2f) {
     auto &device = DW1000Ranging.device;
-    device.address = UwbLink::TAG_SHORT;
+    device.address = TAG_SHORT;
     device.range = range; device.timePollSent.value = int64_t(poll);
     newRange();
-    processLocalSample();
 }
 
-std::vector<uint8_t> bytes(const UwbLink::Frame &frame) {
-    std::vector<uint8_t> data(UwbLink::FRAME_SIZE);
-    UwbLink::encode(frame, data.data()); return data;
-}
-
-void receive(const std::vector<uint8_t> &data) {
+void receive(const std::string &data) {
     AnchorUart.rx.insert(AnchorUart.rx.end(), data.begin(), data.end());
     while (AnchorUart.available()) serviceUart();
 }
@@ -48,77 +48,89 @@ void receive(const std::vector<uint8_t> &data) {
 int main() {
     // Both arrival orders, exactly one use, and the Tag's 40-bit wrap.
     resetTest();
-    receive(bytes(remote(UwbLink::POLL_MASK - 1)));
-    fakeNow += 10; local(UwbLink::POLL_MASK - 1); tryMakePair();
+    receive(remote(POLL_MASK - 1));
+    fakeNow += 10; local(POLL_MASK - 1); tryMakePair();
     assert(pairedCount == 1);
-    tryMakePair(); local(UwbLink::POLL_MASK - 1);
-    receive(bytes(remote(UwbLink::POLL_MASK - 1, 2))); tryMakePair();
+    tryMakePair(); local(POLL_MASK - 1); receive(remote(POLL_MASK - 1)); tryMakePair();
     assert(pairedCount == 1);
-    fakeNow += 10; local(0); receive(bytes(remote(0, 3))); tryMakePair();
+    fakeNow += 10; local(0); receive(remote(0)); tryMakePair();
     assert(pairedCount == 2);
-
-    resetTest(); local(21); receive(bytes(remote(22))); tryMakePair();
+    resetTest(); local(21); receive(remote(22)); tryMakePair();
     assert(pairedCount == 0);
     fakeNow += 10; local(22); tryMakePair(); assert(pairedCount == 1);
 
     // Local expiry, remote send age, and age accumulated after UART receipt.
-    resetTest(); local(31); fakeNow += 81;
-    acceptRemoteFrame(remote(31), fakeNow); tryMakePair(); assert(pairedCount == 0);
-    resetTest(); local(32); auto old = remote(32); old.ageMs = 78;
-    acceptRemoteFrame(old, fakeNow); tryMakePair(); assert(pairedCount == 0);
-    resetTest(); receive(bytes(remote(33))); fakeNow += 78;
+    resetTest(); local(31); fakeNow += 81; lastUartServiceMs = fakeNow;
+    receive(remote(31)); tryMakePair(); assert(pairedCount == 0);
+    resetTest(); local(32); receive(remote(32, 1100, 78)); tryMakePair();
+    assert(pairedCount == 0);
+    resetTest(); receive(remote(33)); fakeNow += 75;
     local(33); tryMakePair(); assert(pairedCount == 0);
+    resetTest(); local(34); receive(remote(34, 1100, 74)); tryMakePair();
+    assert(pairedCount == 1);
 
-    // Corruption, dropped bytes, false sync, unknown source, and partial timeout.
+    // Corruption, dropped bytes, unknown source, and partial-line timeout.
     resetTest(); local(40);
-    auto broken = bytes(remote(40)); broken[22] ^= 1;
-    receive(broken); tryMakePair();
-    assert(pairedCount == 0 && uartParser.badFrames == 1);
-    auto shortened = bytes(remote(40)); shortened.erase(shortened.begin() + 9);
-    auto good = bytes(remote(40, 2)); shortened.insert(shortened.end(), good.begin(), good.end());
-    receive(shortened); tryMakePair(); assert(pairedCount == 1);
-    resetTest(); local(41); auto unknown = bytes(remote(41)); unknown[6] = 0xAA;
-    UwbLink::putLE(unknown.data() + 30, UwbLink::crc16(unknown.data(), 30), 2);
-    receive(unknown); tryMakePair(); assert(pairedCount == 0);
-    good = bytes(remote(41)); receive({good.begin(), good.begin() + 16});
-    fakeNow += 21; receive({good.begin() + 16, good.end()});
+    auto broken = remote(40); broken[7] ^= 1;
+    receive(broken); tryMakePair(); assert(pairedCount == 0 && rejectedFrames == 1);
+    auto shortened = remote(40); shortened.erase(shortened.begin() + 8);
+    receive(shortened + remote(40)); tryMakePair(); assert(pairedCount == 1);
+    resetTest(); local(41); receive(packet("A3,41,1100,0,1")); tryMakePair();
+    assert(pairedCount == 0 && rejectedFrames == 1);
+    auto good = remote(41);
+    receive(good.substr(0, 12)); fakeNow += 21; receive(good.substr(12));
     tryMakePair(); assert(pairedCount == 0);
     receive(good); tryMakePair(); assert(pairedCount == 1);
-    resetTest(); local(42); receive({0x00, 0xB5, 0xB5, 0x62, 0x00});
-    receive(bytes(remote(42))); tryMakePair(); assert(pairedCount == 1);
+    resetTest(); local(42); receive("noise\n$bad" + remote(42));
+    tryMakePair(); assert(pairedCount == 1);
+    resetTest(); receive("$" + std::string(70, 'x') + "\n");
+    assert(rejectedFrames == 1 && !uartReading);
+    local(43); receive(remote(43)); tryMakePair(); assert(pairedCount == 1);
 
-    // Duplicate/out-of-order sequences never refresh a cached measurement.
-    resetTest(); receive(bytes(remote(50, UINT32_MAX)));
-    receive(bytes(remote(51, 0))); assert(anchor2.pollStamp == 51);
-    fakeNow += 10; receive(bytes(remote(52, UINT32_MAX)));
-    assert(anchor2.pollStamp == 51 && rejectedFrames == 1);
-    receive(bytes(remote(52, 0))); assert(rejectedFrames == 2);
+    // Valid-checksum but malformed numbers must not become fresh samples.
+    for (const auto &payload : {"A2,44,1100,-1,1", "A2,44,1100,100,1",
+                               "A2,1099511627776,1100,0,1", "A2,44,1100,0,2",
+                               "A2,44,1100,0,1junk"}) {
+        resetTest(); local(44); receive(packet(payload)); tryMakePair();
+        assert(pairedCount == 0 && rejectedFrames == 1);
+    }
+    for (long mm : {0L, -1L, 10001L}) {
+        resetTest(); local(44); receive(remote(44, mm)); tryMakePair();
+        assert(pairedCount == 0);
+    }
+    resetTest(); local(44, NAN); receive(remote(44)); tryMakePair(); assert(pairedCount == 0);
 
-    // A1 backlog is discarded after a loop stall, not stamped as new data.
-    resetTest(); local(60); auto queued = bytes(remote(60));
+    // Repeating a line cannot extend its original freshness deadline.
+    resetTest(); receive(remote(50)); fakeNow += 70; receive(remote(50));
+    assert(anchor2.timeMs == 100 && anchor2.sourceAgeMs == UART_TRANSFER_MS);
+    fakeNow += 5; local(50); tryMakePair(); assert(pairedCount == 0);
+
+    // A1 backlog is discarded after a loop stall or excessive RX accumulation.
+    resetTest(); local(60); auto queued = remote(60);
     AnchorUart.rx.insert(AnchorUart.rx.end(), queued.begin(), queued.end());
     fakeNow += 81; serviceUart(); tryMakePair();
     assert(pairedCount == 0 && !anchor2.fresh && !AnchorUart.available());
-    ++fakeNow; local(61); receive(bytes(remote(61, 2))); tryMakePair();
-    assert(pairedCount == 1);
+    ++fakeNow; local(61); receive(remote(61)); tryMakePair(); assert(pairedCount == 1);
+    resetTest(); local(62); receive(std::string(129, 'x') + remote(62));
+    tryMakePair(); assert(pairedCount == 0 && !discardUartBacklog);
 
-    // A2 reset/loss clears cached samples and votes while preserving RAM offset.
+    // Loss/reconnect clears samples and votes, retaining the calibrated RAM offset.
     resetTest(); offsetCalibrated = true; OFFSET_A2_M = 0.1f;
-    receive(bytes(remote(70))); local(70); tryMakePair(); assert(filterReady);
-    local(71); auto reboot = remote(71); reboot.bootId = 43;
-    receive(bytes(reboot)); tryMakePair();
-    assert(pairedCount == 1 && !filterReady && OFFSET_A2_M == 0.1f);
-    auto lost = remote(0, 2); lost.bootId = 43; lost.kind = UwbLink::TAG_LOST; lost.valid = false;
-    receive(bytes(lost)); assert(!anchor1.fresh && !anchor2.fresh && offsetCalibrated);
+    receive(remote(70)); local(70); tryMakePair(); assert(filterReady);
+    local(71); receive(remote(0, 0, 0, -1));
+    assert(!anchor1.fresh && !anchor2.fresh && !filterReady && offsetCalibrated);
+    assert(OFFSET_A2_M == 0.1f);
     fakeNow = 600; flushDirectionVotes(fakeNow);
     assert(Serial.output.find("KHONG CO DU LIEU | valid=0") != std::string::npos);
+    lastUartServiceMs = fakeNow;
+    local(72); receive(remote(72)); tryMakePair(); assert(filterReady && pairedCount == 2);
 
     // Run the actual moved calibration, then verify offset is applied once.
     resetTest();
     for (uint32_t i = 0; i <= 60; ++i) {
-        fakeNow = 100 + i * 100;
+        fakeNow = 100 + i * 100; lastUartServiceMs = fakeNow;
         local(1000 + i, 1.2f);
-        acceptRemoteFrame(remote(1000 + i, i + 1, 1100), fakeNow);
+        receive(remote(1000 + i));
         tryMakePair();
     }
     assert(offsetCalibrated && fabsf(OFFSET_A2_M - 0.1f) < 0.00001f);
@@ -129,9 +141,9 @@ int main() {
 
     resetTest();
     for (uint32_t i = 0; i <= 65; ++i) {
-        fakeNow = 100 + i * 100;
+        fakeNow = 100 + i * 100; lastUartServiceMs = fakeNow;
         local(2000 + i, i % 2 ? 1.5f : 0.9f);
-        acceptRemoteFrame(remote(2000 + i, i + 1), fakeNow); tryMakePair();
+        receive(remote(2000 + i)); tryMakePair();
     }
     assert(!offsetCalibrated && Serial.output.find("CALIB_CHUA_ON_DINH") != std::string::npos);
 
@@ -148,9 +160,9 @@ int main() {
     addDirectionVote(4, 1, 1, 15, 601); addDirectionVote(2, 1, 1, -15, 602);
     flushDirectionVotes(1100); assert(lastVotedDirection == 4);
     flushDirectionVotes(1600); assert(lastVotedDirection == -1);
-    resetTest(); offsetCalibrated = true; local(90); acceptRemoteFrame(remote(90), fakeNow); tryMakePair();
+    resetTest(); offsetCalibrated = true; local(90); receive(remote(90)); tryMakePair();
     fakeNow = 601; lastUartServiceMs = fakeNow; loop();
     assert(targetTimedOut && !filterReady && lastVotedDirection == -1);
     assert(Serial.output.find("valid=0") != std::string::npos);
-    std::cout << "Anchor1: pairing, parser, restart, calibration, geometry, votes, timeout PASS\n";
+    std::cout << "Anchor1: pairing, text parser, freshness, calibration, geometry, votes, timeout PASS\n";
 }

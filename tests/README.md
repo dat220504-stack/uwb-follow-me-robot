@@ -18,10 +18,10 @@ Trên Linux/macOS, dùng `c++ -std=c++17 -Wall -Wextra -I tests/stubs tests/test
 
 Bộ test kiểm tra:
 
-- Ghép cùng POLL theo cả hai thứ tự đến; không ghép hai lượt khác nhau, không dùng lại cặp, xử lý vòng tràn timestamp/sequence.
-- CRC, địa chỉ sai, mất byte, magic giả, timeout gói dở, sequence cũ và backlog sau khi A1 ngừng loop.
+- Ghép cùng POLL theo cả hai thứ tự đến; không ghép hai lượt khác nhau, không dùng lại cặp, xử lý vòng tràn timestamp 40 bit.
+- Checksum XOR, nguồn sai, trường số lỗi, mất byte, ký tự nhiễu, tràn dòng, timeout dòng dở, dòng lặp và backlog sau khi A1 ngừng loop.
 - A2 giữ mẫu mới nhất khi UART bận; bỏ mẫu quá tuổi; báo range không hợp lệ và mất/kết nối lại Tag.
-- A2 reset/mất Tag xóa mẫu/hướng cũ nhưng giữ offset A1.
+- Thông báo mất/kết nối lại Tag xóa mẫu/hướng cũ nhưng giữ offset A1.
 - Calibration với dữ liệu ổn định/không ổn định; bù offset một lần; dấu góc, tam giác vô lý, hòa phiếu, cửa sổ trống và mất mục tiêu.
 - Tag giữ A2 trước A1, loại Anchor lạ và không xóa thiết bị ngay trong callback.
 

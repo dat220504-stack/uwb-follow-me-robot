@@ -3,15 +3,14 @@
   TX GPIO17 -> A1 RX GPIO16; common GND; 115200 baud, 8N1, 3.3 V.
   Callback only stores a sample/event. Sending runs outside DW1000Ranging.loop().
   Same UWB mode and antenna delay as the supplied original; library unchanged.
-  Use this entire sketch folder, including UwbUart.h. See docs/UART.md.
+  UART dung dong chu de doc; phan gui nam trong sketch. Xem docs/UART.md.
 */
 #include <SPI.h>
 #include <math.h>
-#include <esp_random.h>
-#include <soc/soc_caps.h>
 #include "DW1000.h"
 #include "DW1000Ranging.h"
-#include "UwbUart.h"
+#include <stdio.h>
+#include <string.h>
 
 char ANCHOR_ADD[] = "87:17:5B:D5:A9:9A:E2:9C";
 constexpr uint8_t SPI_SCK = 18, SPI_MISO = 19, SPI_MOSI = 23;
@@ -23,28 +22,29 @@ constexpr uint32_t MAX_SAMPLE_AGE_MS = 80;
 constexpr float MAX_VALID_RANGE_M = 10.0f;
 constexpr bool DEBUG_LOG = false;
 HardwareSerial AnchorUart(2);
+const uint16_t TAG_SHORT = 0x007D;
+const uint64_t POLL_MASK = (uint64_t(1) << 40) - 1;
+const uint32_t UART_TRANSFER_MS = 6;
 
 struct CapturedSample {
     float meters = 0.0f;
-    float rxPower = 0.0f;
     uint64_t pollStamp = 0;
     uint32_t timeMs = 0;
 };
 CapturedSample pendingSample;
 bool samplePending = false, tagLostPending = false, tagAddedPending = false;
-uint32_t bootId = 0, sequence = 0;
 
 void newRange();
 void newBlink(DW1000Device *device);
 void inactiveDevice(DW1000Device *device);
 void serviceUartTx();
+uint8_t uartChecksum(const char *text);
 
 void setup() {
     Serial.begin(115200);
     // No software TX queue: availableForWrite() reports hardware FIFO space.
     AnchorUart.setTxBufferSize(0);
     AnchorUart.begin(UART_BAUD, SERIAL_8N1, UART_RX_PIN, UART_TX_PIN);
-    bootId = esp_random();
     delay(1000);
     SPI.begin(SPI_SCK, SPI_MISO, SPI_MOSI);
     DW1000Ranging.initCommunication(PIN_RST, PIN_SS, PIN_IRQ);
@@ -65,57 +65,54 @@ void loop() {
 
 void newRange() {
     DW1000Device *device = DW1000Ranging.getDistantDevice();
-    if (!device || device->getShortAddress() != UwbLink::TAG_SHORT) return;
+    if (!device || device->getShortAddress() != TAG_SHORT) return;
     pendingSample.meters = device->getRange();
-    pendingSample.rxPower = device->getRXPower();
-    pendingSample.pollStamp = uint64_t(device->timePollSent.getTimestamp()) & UwbLink::POLL_MASK;
+    pendingSample.pollStamp = uint64_t(device->timePollSent.getTimestamp()) & POLL_MASK;
     pendingSample.timeMs = millis();
     samplePending = true;
 }
 
 void newBlink(DW1000Device *device) {
-    if (device && device->getShortAddress() == UwbLink::TAG_SHORT) tagAddedPending = true;
+    if (device && device->getShortAddress() == TAG_SHORT) tagAddedPending = true;
 }
 
 void inactiveDevice(DW1000Device *device) {
-    if (device && device->getShortAddress() == UwbLink::TAG_SHORT) {
+    if (device && device->getShortAddress() == TAG_SHORT) {
         tagLostPending = true;
         samplePending = false;
     }
 }
 
+uint8_t uartChecksum(const char *text) {
+    uint8_t sum = 0;
+    for (uint8_t i = 0; text[i] != '\0'; ++i) sum ^= uint8_t(text[i]);
+    return sum;
+}
+
 void serviceUartTx() {
     if (!samplePending && !tagLostPending) return;
-    // Never wait for UART space. A single pending sample keeps the newest data.
-    const int txSpace = AnchorUart.availableForWrite();
-    if (txSpace < UwbLink::FRAME_SIZE) return;
-    UwbLink::Frame frame;
-    frame.bootId = bootId;
-    frame.sequence = ++sequence;
+    // FIFO ESP32 co 128 byte. Chi gui khi trong, khong dung vong cho.
+    if (AnchorUart.availableForWrite() < 128) return;
+    uint64_t poll = 0;
+    long rangeMm = 0;
+    uint32_t age = 0;
+    int valid = -1; // -1: Tag mat/khoi dong lai; 0: range loi; 1: range tot.
     if (tagLostPending) {
-        frame.kind = UwbLink::TAG_LOST;
         tagLostPending = false;
     } else {
-        const uint32_t queuedBytes = txSpace < SOC_UART_FIFO_LEN ? SOC_UART_FIFO_LEN - txSpace : 0;
-        const uint32_t queueMs = (queuedBytes * 10000UL + UART_BAUD - 1) / UART_BAUD;
-        const uint32_t age = uint32_t(millis() - pendingSample.timeMs) + queueMs;
+        age = uint32_t(millis() - pendingSample.timeMs);
         samplePending = false;
-        if (age + UwbLink::WIRE_TIME_MS > MAX_SAMPLE_AGE_MS) return;
-        frame.pollStamp = pendingSample.pollStamp;
-        frame.ageMs = uint16_t(age);
-        frame.valid = isfinite(pendingSample.meters) && pendingSample.meters > 0.0f &&
-                      pendingSample.meters <= MAX_VALID_RANGE_M;
-        if (frame.valid) frame.rangeMm = int32_t(lroundf(pendingSample.meters * 1000.0f));
-        if (isfinite(pendingSample.rxPower) && fabsf(pendingSample.rxPower) <= 3276.0f)
-            frame.rxDb10 = int16_t(lroundf(pendingSample.rxPower * 10.0f));
+        if (age + UART_TRANSFER_MS > MAX_SAMPLE_AGE_MS) return;
+        poll = pendingSample.pollStamp;
+        valid = isfinite(pendingSample.meters) && pendingSample.meters > 0.0f &&
+                pendingSample.meters <= MAX_VALID_RANGE_M ? 1 : 0;
+        if (valid == 1) rangeMm = long(lroundf(pendingSample.meters * 1000.0f));
     }
-    uint8_t bytes[UwbLink::FRAME_SIZE];
-    UwbLink::encode(frame, bytes);
-    AnchorUart.write(bytes, sizeof(bytes));
-    if (DEBUG_LOG) {
-        Serial.print("A2_UART,seq="); Serial.print(frame.sequence);
-        Serial.print(",kind="); Serial.print(frame.kind);
-        Serial.print(",range_mm="); Serial.print(frame.rangeMm);
-        Serial.print(",valid="); Serial.println(frame.valid ? 1 : 0);
-    }
+    char message[48];
+    snprintf(message, sizeof(message), "A2,%llu,%ld,%lu,%d",
+             (unsigned long long)poll, rangeMm, (unsigned long)age, valid);
+    char packet[64];
+    snprintf(packet, sizeof(packet), "$%s*%02X\n", message, (unsigned int)uartChecksum(message));
+    AnchorUart.write((const uint8_t *)packet, strlen(packet));
+    if (DEBUG_LOG) Serial.print(packet);
 }

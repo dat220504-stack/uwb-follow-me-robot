@@ -5,13 +5,16 @@
   Each callback only captures a sample/event; UART and calculations run in loop().
   At A1 startup/reset, keep Tag stationary in front, centered, about 1 m away.
   Wait for CALIB_OK. Offset stays in RAM across Tag/A2 reconnects.
-  Use this entire sketch folder, including UwbUart.h. See docs/UART.md.
+  UART dung dong chu: $A2,poll,range_mm,age_ms,valid*checksum\n.
+  Phan gui/nhan nam ngay trong sketch. Xem docs/UART.md.
 */
 #include <SPI.h>
 #include <math.h>
 #include "DW1000.h"
 #include "DW1000Ranging.h"
-#include "UwbUart.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 char ANCHOR_ADD[] = "86:17:5B:D5:A9:9A:E2:9C";
 constexpr uint8_t SPI_SCK = 18, SPI_MISO = 19, SPI_MOSI = 23;
@@ -23,6 +26,11 @@ constexpr uint32_t TARGET_TIMEOUT_MS = 500;
 constexpr uint16_t UART_BYTE_BUDGET = 64;
 const float ANCHOR_SPACING_M = 0.5f;
 HardwareSerial AnchorUart(2);
+const uint16_t TAG_SHORT = 0x007D;
+const uint64_t POLL_MASK = (uint64_t(1) << 40) - 1;
+const uint32_t UART_TRANSFER_MS = 6; // Du phong truyen dong chu ngan o 115200 baud.
+const uint32_t UART_LINE_TIMEOUT_MS = 20;
+const uint8_t UART_LINE_SIZE = 64;
 
 const uint32_t MAX_PAIR_SKEW_MS = 80;
 float OFFSET_A2_M = 0.0f; // Tu tinh mot lan moi khi bat/reset,
@@ -49,20 +57,21 @@ const float KALMAN_Q = 36.0f;   // Tang: bam nhanh hon, rung nhieu hon.
 const float KALMAN_R = 25.0f;   // Tang: muot hon, tre hon.
 const uint32_t FILTER_RESET_MS = 800;
 
-
 struct RangeSample {
     float meters = 0.0f;
-    float rxPower = 0.0f;
     uint64_t pollStamp = 0;
     uint32_t timeMs = 0; // Always A1's clock, for local callback or UART receipt.
     uint32_t sourceAgeMs = 0;
     bool fresh = false;
 };
-RangeSample anchor1, anchor2, pendingLocal;
-bool localPending = false, localTagLost = false, localTagAdded = false;
-bool remoteSessionKnown = false;
-uint32_t remoteBootId = 0, remoteSequence = 0;
-UwbLink::Parser uartParser;
+RangeSample anchor1, anchor2;
+bool localTagLost = false, localTagAdded = false;
+char uartLine[UART_LINE_SIZE];
+uint8_t uartLength = 0;
+bool uartReading = false;
+uint32_t uartLineStartMs = 0;
+bool lastRemotePollKnown = false;
+uint64_t lastRemotePoll = 0;
 uint32_t lastUartServiceMs = 0;
 bool discardUartBacklog = true;
 bool lastPairKnown = false, lastConsumedPollKnown = false;
@@ -104,15 +113,14 @@ float calibrationMeanD2 = 0.0f;
 float calibrationM2D1 = 0.0f;
 float calibrationM2D2 = 0.0f;
 
-
 void newRange();
 void newBlink(DW1000Device *device);
 void inactiveDevice(DW1000Device *device);
 void clearFreshPair();
 void resetMeasurements();
-void processLocalSample();
 void serviceUart();
-void acceptRemoteFrame(const UwbLink::Frame &frame, uint32_t now);
+void readUartLine(uint32_t now);
+uint8_t uartChecksum(const char *text);
 void tryMakePair();
 void dropOldSingleSample();
 bool hasRecentAnchorData(uint32_t now);
@@ -151,7 +159,6 @@ void loop() {
         resetMeasurements();
         localTagLost = localTagAdded = false;
     }
-    processLocalSample();
     serviceUart();
     dropOldSingleSample();
     tryMakePair();
@@ -166,81 +173,98 @@ void loop() {
 
 void newRange() {
     DW1000Device *device = DW1000Ranging.getDistantDevice();
-    if (!device || device->getShortAddress() != UwbLink::TAG_SHORT) return;
-    pendingLocal.meters = device->getRange();
-    pendingLocal.rxPower = device->getRXPower();
-    pendingLocal.pollStamp = uint64_t(device->timePollSent.getTimestamp()) & UwbLink::POLL_MASK;
-    pendingLocal.timeMs = millis();
-    pendingLocal.sourceAgeMs = 0;
-    pendingLocal.fresh = true;
-    localPending = true;
+    if (!device || device->getShortAddress() != TAG_SHORT) return;
+    // Callback chi luu d1; ghep cap va tinh goc o loop().
+    anchor1.meters = device->getRange();
+    anchor1.pollStamp = uint64_t(device->timePollSent.getTimestamp()) & POLL_MASK;
+    anchor1.timeMs = millis();
+    anchor1.sourceAgeMs = 0;
+    anchor1.fresh = true;
 }
 
 void newBlink(DW1000Device *device) {
-    if (device && device->getShortAddress() == UwbLink::TAG_SHORT) localTagAdded = true;
+    if (device && device->getShortAddress() == TAG_SHORT) localTagAdded = true;
 }
 
 void inactiveDevice(DW1000Device *device) {
-    if (device && device->getShortAddress() == UwbLink::TAG_SHORT) localTagLost = true;
-}
-
-void processLocalSample() {
-    if (!localPending) return;
-    localPending = false;
-    if (!isfinite(pendingLocal.meters) || pendingLocal.meters <= 0.0f ||
-        pendingLocal.meters > MAX_VALID_RANGE_M) {
-        clearFreshPair();
-        return;
-    }
-    if (lastConsumedPollKnown && pendingLocal.pollStamp == lastConsumedPoll) return;
-    anchor1 = pendingLocal;
+    if (device && device->getShortAddress() == TAG_SHORT) localTagLost = true;
 }
 
 void serviceUart() {
     const uint32_t now = millis();
-    // Bytes already buffered during a long A1 stall cannot be assigned a new age.
+    // Bo byte cu khi loop ngung qua lau hoac UART bi don nhieu dong.
     if (uint32_t(now - lastUartServiceMs) > MAX_PAIR_SKEW_MS ||
-        AnchorUart.available() > 4 * UwbLink::FRAME_SIZE) {
+        AnchorUart.available() > 2 * UART_LINE_SIZE) {
         discardUartBacklog = true;
-        uartParser.reset();
+        uartReading = false;
         resetMeasurements();
     }
     lastUartServiceMs = now;
+    if (uartReading && uint32_t(now - uartLineStartMs) > UART_LINE_TIMEOUT_MS)
+        uartReading = false;
+
     for (uint16_t i = 0; i < UART_BYTE_BUDGET && AnchorUart.available(); ++i) {
-        const int value = AnchorUart.read();
-        if (value < 0) break;
+        const char c = char(AnchorUart.read());
         if (discardUartBacklog) continue;
-        UwbLink::Frame frame;
-        if (uartParser.feed(uint8_t(value), millis(), frame)) acceptRemoteFrame(frame, millis());
+        if (c == '$') { // Dau bat dau: tu tim lai dong sau khi thieu byte.
+            uartReading = true;
+            uartLength = 0;
+            uartLineStartMs = now;
+        } else if (uartReading && c == '\n') {
+            uartLine[uartLength] = '\0';
+            readUartLine(now);
+            uartReading = false;
+        } else if (uartReading) {
+            if (uartLength < UART_LINE_SIZE - 1) uartLine[uartLength++] = c;
+            else { uartReading = false; ++rejectedFrames; }
+        }
     }
     if (discardUartBacklog && !AnchorUart.available()) discardUartBacklog = false;
 }
 
-void acceptRemoteFrame(const UwbLink::Frame &frame, uint32_t now) {
-    if (remoteSessionKnown && frame.bootId == remoteBootId &&
-        !UwbLink::newerSequence(frame.sequence, remoteSequence)) {
+uint8_t uartChecksum(const char *text) {
+    uint8_t sum = 0;
+    for (uint8_t i = 0; text[i] != '\0'; ++i) sum ^= uint8_t(text[i]);
+    return sum;
+}
+
+void readUartLine(uint32_t now) {
+    // Dong co dang A2,poll,range_mm,age_ms,valid*HH. HH la checksum XOR.
+    char *star = strchr(uartLine, '*');
+    if (!star || strlen(star + 1) != 2) { ++rejectedFrames; return; }
+    char *end;
+    const unsigned long receivedSum = strtoul(star + 1, &end, 16);
+    *star = '\0';
+    if (*end != '\0' || uartChecksum(uartLine) != receivedSum) { ++rejectedFrames; return; }
+
+    unsigned long long poll;
+    long rangeMm;
+    unsigned long ageMs;
+    int valid;
+    char extra;
+    // Gioi han so chu so va bo dong co du ky tu o cuoi.
+    if (sscanf(uartLine, "A2,%13llu,%5ld,%2lu,%2d%c", &poll, &rangeMm, &ageMs, &valid, &extra) != 4 ||
+        poll > POLL_MASK || ageMs > MAX_PAIR_SKEW_MS || (valid != -1 && valid != 0 && valid != 1)) {
         ++rejectedFrames;
         return;
     }
-    if (remoteSessionKnown && frame.bootId != remoteBootId) resetMeasurements();
-    remoteSessionKnown = true;
-    remoteBootId = frame.bootId;
-    remoteSequence = frame.sequence;
-    if (frame.kind == UwbLink::TAG_LOST) {
+    if (valid == -1) { // A2 bao Tag mat/khoi dong lai.
         resetMeasurements();
+        lastRemotePollKnown = false;
         return;
     }
-    const uint32_t age = uint32_t(frame.ageMs) + UwbLink::WIRE_TIME_MS + uartParser.assemblyMs;
-    if (!frame.valid || frame.rangeMm <= 0 || frame.rangeMm > int32_t(MAX_VALID_RANGE_M * 1000) ||
-        age > MAX_PAIR_SKEW_MS) {
+    if (lastRemotePollKnown && uint64_t(poll) == lastRemotePoll) return;
+    lastRemotePoll = uint64_t(poll);
+    lastRemotePollKnown = true;
+    const uint32_t age = uint32_t(ageMs) + UART_TRANSFER_MS + uint32_t(now - uartLineStartMs);
+    if (valid != 1 || rangeMm <= 0 || rangeMm > long(MAX_VALID_RANGE_M * 1000) || age > MAX_PAIR_SKEW_MS) {
         ++rejectedFrames;
         clearFreshPair();
         return;
     }
-    if (lastConsumedPollKnown && frame.pollStamp == lastConsumedPoll) return;
-    anchor2.meters = frame.rangeMm / 1000.0f;
-    anchor2.rxPower = frame.rxDb10 / 10.0f;
-    anchor2.pollStamp = frame.pollStamp;
+    if (lastConsumedPollKnown && uint64_t(poll) == lastConsumedPoll) return;
+    anchor2.meters = rangeMm / 1000.0f;
+    anchor2.pollStamp = uint64_t(poll);
     anchor2.timeMs = now;
     anchor2.sourceAgeMs = age;
     anchor2.fresh = true;
@@ -252,7 +276,6 @@ void clearFreshPair() {
 
 void resetMeasurements() {
     clearFreshPair();
-    localPending = false;
     lastPairKnown = false;
     lastConsumedPollKnown = false;
     filterReady = false;
@@ -275,12 +298,15 @@ bool hasRecentAnchorData(uint32_t now) {
 
 void tryMakePair() {
     if (!anchor1.fresh || !anchor2.fresh || anchor1.pollStamp != anchor2.pollStamp) return;
-    // Even same-round data is discarded after the local freshness deadline.
+    // Chi ghep cung POLL, con moi va chua dung cap nay.
     dropOldSingleSample();
     if (!anchor1.fresh || !anchor2.fresh) return;
     const uint32_t now = millis();
     const float d1 = anchor1.meters;
     const float d2Raw = anchor2.meters;
+    if (lastConsumedPollKnown && anchor1.pollStamp == lastConsumedPoll) { clearFreshPair(); return; }
+    if (!isfinite(d1) || !isfinite(d2Raw) || d1 <= 0.0f || d2Raw <= 0.0f ||
+        d1 > MAX_VALID_RANGE_M || d2Raw > MAX_VALID_RANGE_M) { clearFreshPair(); return; }
     lastConsumedPoll = anchor1.pollStamp;
     lastConsumedPollKnown = true;
     clearFreshPair();
@@ -294,7 +320,7 @@ void tryMakePair() {
         Serial.print(",d2_raw="); Serial.print(d2Raw, 3);
         Serial.print(",age1_ms="); Serial.print(uint32_t(now - anchor1.timeMs));
         Serial.print(",age2_ms="); Serial.print(uint32_t(now - anchor2.timeMs) + anchor2.sourceAgeMs);
-        Serial.print(",crc_bad="); Serial.println(uartParser.badFrames);
+        Serial.print(",uart_bad="); Serial.println(rejectedFrames);
     }
     if (!offsetCalibrated) {
         collectCalibrationPair(d1, d2Raw, now);

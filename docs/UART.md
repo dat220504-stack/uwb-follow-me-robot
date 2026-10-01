@@ -1,67 +1,57 @@
-# UART A2 → A1 và ghép lượt đo
+# UART A2 → A1
 
 ## Nối và nạp
 
-Nạp đầy đủ ba thư mục `firmware/Tag`, `firmware/Anchor1`, `firmware/Anchor2`. Hai thư mục Anchor có bản `UwbUart.h` giống nhau để Arduino IDE có thể mở mỗi sketch độc lập.
+Mỗi node dùng một file `.ino`. Code gửi UART nằm trong `Anchor2.ino`, code nhận nằm trong `Anchor1.ino`; không có thư viện UART tự viết đi kèm.
 
-| Dây | Từ A2 | Sang A1 |
-|---|---|---|
-| Dữ liệu | GPIO17 / TX2 | GPIO16 / RX2 |
-| Tham chiếu điện áp | GND | GND |
+```text
+A2 GPIO17 (TX2) ──► A1 GPIO16 (RX2)
+A2 GND         ─── A1 GND
+```
 
-115200 baud, 8N1, UART mức 3,3 V, dùng `HardwareSerial(2)`. Các chân này dành cho ESP32 thường và phải còn trống trên bo; bo có PSRAM sử dụng GPIO16/17 cần chọn chân UART khác tại `UART_RX_PIN` / `UART_TX_PIN`. RX của A2 và TX của A1 không cần nối trong bước này. Serial Monitor 115200 baud dùng UART0 riêng.
+UART2: 115200 baud, 8N1, mức 3,3 V. Serial Monitor cũng dùng 115200 baud. Cấu hình dành cho ESP32 thường, GPIO16/17 còn trống.
 
-## Gói nhị phân 32 byte
+## Dòng dữ liệu dễ đọc
 
-Các số nhiều byte dùng little endian. `sequence` chỉ dùng chống lặp/đảo thứ tự gói từ **cùng A2**, không dùng làm số lượt đo chung với A1.
+Ví dụ A2 gửi khoảng cách 1,234 m:
 
-| Byte | Nội dung |
+```text
+$A2,123,1234,0,1*46
+```
+
+Mỗi dòng kết thúc bằng ký tự xuống dòng `\n`.
+
+| Trường | Ý nghĩa |
 |---|---|
-| 0–1 | Magic `B5 62` |
-| 2 | Phiên bản = 1 |
-| 3 | Loại: 1 = mẫu; 2 = Tag mất/kết nối lại |
-| 4–5 | Nguồn A2 = `0x1787` |
-| 6–7 | Tag đang đo = `0x007D` |
-| 8–11 | `bootId`: số ngẫu nhiên lúc A2 khởi động |
-| 12–15 | `sequence`: bộ đếm gói A2, uint32 |
-| 16–20 | Timestamp phát POLL của **Tag**, 40 bit |
-| 21 | `valid`: 1 khi d2 RAW hữu hạn, > 0 và ≤ 10 m; 0 khi lỗi |
-| 22–25 | d2 RAW, int32, đơn vị mm |
-| 26–27 | Công suất nhận, int16, đơn vị 0,1 dBm |
-| 28–29 | Tuổi mẫu tại A2 khi gửi, uint16, đơn vị ms |
-| 30–31 | CRC16-CCITT-FALSE của byte 0–29, polynomial `0x1021`, init `0xFFFF` |
+| `A2` | Nguồn gửi |
+| `123` | Timestamp POLL 40 bit của Tag, viết dạng thập phân |
+| `1234` | d2 RAW, đơn vị mm; A2 chưa bù offset |
+| `0` | Tuổi mẫu tại A2 lúc gửi, đơn vị ms |
+| `1` | Trạng thái: 1 = range tốt; 0 = range lỗi; -1 = mất/kết nối lại Tag |
+| `46` | Checksum XOR của phần `A2,123,1234,0,1`, viết bằng hai chữ số hex |
 
-Gói loại 2 có `valid=0`. A1 xóa mẫu, Kalman và vote cũ khi nhận gói này hoặc `bootId` đổi, giữ offset đã calibration. Kết nối lại Tag tại A2 được báo bằng cùng loại gói để vô hiệu hóa mẫu trước lần kết nối.
+Checksum là phép XOR từng byte, dùng kiểm tra lỗi cơ bản. Nó đơn giản hơn và phát hiện lỗi kém hơn CRC16 của bản trước. Đã bỏ mã khởi động, bộ đếm gói riêng và công suất nhận khỏi UART.
 
-A2 gửi ngoài callback khi FIFO UART đủ chỗ cho toàn bộ 32 byte. Không dùng hàng đợi TX phần mềm; tuổi gửi gồm thời gian từ callback và thời gian chờ của số byte đã có trong FIFO. Khi UART bận, A2 giữ mẫu mới nhất; mẫu quá tuổi bị bỏ. 32 byte trên dây mất khoảng 2,78 ms.
+## Code chạy thế nào
 
-## Timestamp và tuổi mẫu
+1. **A2:** callback lưu d2 RAW, timestamp POLL và thời điểm đo. `loop()` tạo dòng chữ và gửi khi FIFO UART trống; UART bận thì giữ mẫu mới nhất, không đứng chờ.
+2. **A1:** callback lưu d1. `loop()` đọc UART từng byte, kiểm tra dòng, giữ d2, rồi ghép hai mẫu khi timestamp POLL **bằng nhau**.
+3. **A1:** mỗi cặp còn mới chỉ dùng một lần. Calibration tính offset A2; sau đó bù d2 một lần, tính góc, lọc Kalman và vote hướng mỗi 500 ms.
 
-Source `DW1000.zip` của dự án cho thấy Tag ghi `timePollSent` vào mỗi mục Anchor trong gói RANGE. Mỗi Anchor đọc timestamp này trước khi tính range và gọi callback. A1/A2 lấy trực tiếp `device->timePollSent.getTimestamp()` trong callback; không sửa giao thức UWB hay thư viện.
+Timestamp lấy trực tiếp từ `device->timePollSent.getTimestamp()` của thư viện hiện tại. Không sửa thư viện DW1000. Tag vẫn quản lý A2 index 0 → A1 index 1; thứ tự UART đến không thay lịch UWB.
 
-A1 ghép khi:
+Mẫu quá 80 ms bị bỏ. Tuổi d1 tính trên đồng hồ A1; tuổi d2 gồm tuổi A2 gửi, 6 ms dự phòng truyền và thời gian ráp/lưu dòng tại A1. Hai ESP32 chỉ trao đổi **khoảng thời gian đã trôi qua**, không so trực tiếp `millis()` của hai bo. Mỗi dòng gửi nhỏ hơn 64 byte; 6 ms đủ dự phòng thời gian truyền tại 115200 baud.
 
-1. Có một mẫu mới từ BU01 của A1 và một mẫu mới từ UART A2.
-2. Hai mẫu có timestamp POLL **bằng nhau**. Không ghép chỉ vì chúng đến gần nhau.
-3. Mỗi mẫu còn trong giới hạn 80 ms; cặp đã dùng không được dùng lại.
+A1 đọc tối đa 64 byte mỗi lượt loop. Dòng thiếu quá 20 ms, tràn bộ đệm, sai checksum hoặc sai trường dữ liệu bị bỏ; gặp `$` thì bắt đầu lại dòng. Nếu A1 ngừng phục vụ UART quá 80 ms hoặc RX tích quá 128 byte, A1 bỏ dữ liệu tồn và mẫu đã lưu. Dữ liệu tồn lúc khởi động cũng được bỏ.
 
-A1 nhận bên nào trước thì giữ bên đó. Thứ tự đến qua UART không quyết định thứ tự UWB; Tag tiếp tục quản lý A2 index 0 → A1 index 1.
-
-Tuổi d1 tính bằng `millis()` A1 từ callback. Tuổi d2 gồm tuổi do A2 gửi, 3 ms dự phòng truyền 32 byte, thời gian ráp gói và thời gian lưu tại A1. Giá trị A2 gửi là **khoảng thời gian đã trôi qua**, không phải `millis()` tuyệt đối; hai đồng hồ ESP32 không được so trực tiếp. Timestamp POLL chỉ so bằng nhau, nên không cần sắp thứ tự timestamp qua vòng tràn 40 bit.
-
-Parser nhận tối đa 64 byte mỗi lượt loop, không đợi đủ gói. Sai CRC, sai nguồn/Tag/phiên bản, gói lặp và gói quá tuổi bị bỏ; gói dở quá 20 ms được bỏ và parser tìm lại magic. Nếu A1 ngừng phục vụ UART quá 80 ms hoặc buffer tích quá 128 byte, A1 bỏ backlog và mẫu đã lưu, đợi dữ liệu mới. Buffer từ lúc khởi động cũng được bỏ.
-
-Sau calibration, cửa sổ vote không có kết quả hợp lệ in `KHONG CO DU LIEU | valid=0`. Không có cặp đo mới quá 500 ms thì xóa lịch sử hướng/Kalman. Vote vẫn xuất mỗi 500 ms, nên thông báo Serial có thể đến ở mốc vote tiếp theo. Trong calibration giữ giới hạn ngắt cặp 1500 ms và thời gian thu tối đa 60000 ms như bản nguồn.
+Báo trạng thái -1 xóa mẫu, Kalman và vote cũ, giữ offset đã calibration. A2 khởi động lại sẽ báo kết nối khi tìm lại Tag. Sau calibration, không có cặp mới quá 500 ms thì A1 xóa lịch sử hướng; cửa sổ vote trống in `KHONG CO DU LIEU | valid=0`. Trong calibration giữ giới hạn ngắt cặp 1500 ms và thu mẫu tối đa 60000 ms như bản nguồn.
 
 ## Thử trên ba bo
 
-1. Kiểm tra đường UART/GND, nạp đúng sketch cho từng node. A1 phải in `A1 READY`, A2 in `A2 READY`, Tag in `TAG READY`.
-2. Đặt Tag giữa, đứng yên phía trước khoảng 1 m. Bật `DEBUG_LOG=true` ở A1 nếu cần xem `PAIR`, d1/d2 RAW, tuổi mẫu và `crc_bad`. Nếu A1 chỉ báo chờ cặp cùng POLL, kiểm tra dây, địa chỉ, mode và việc A2 vào trước A1 trên Tag.
-3. Chờ `CALIB_OK`; kiểm tra offset, hai khoảng cách sau bù và hướng `THANG`. Không calibration bằng cách ép d1/d2 về 1 m.
-4. Di chuyển Tag lần lượt sang trái/phải trong vùng phía trước, kiểm tra dấu góc và các nhãn hướng. Giữ baseline đúng 0,50 m.
-5. Rút dây TX A2: A1 phải ngừng xuất kết quả hợp lệ sau khi các cửa sổ hiện tại hết mẫu. Nối lại: đợi cặp mới, giữ offset cũ.
-6. Tắt/bật A2, rồi Tag: mẫu/vote cũ phải được xóa và đo lại, offset đã chốt vẫn giữ ở A1.
-7. Reset A1: phải quay lại calibration; đặt Tag giữa và chờ `CALIB_OK` trước khi di chuyển.
-8. Thử gói lỗi/thiếu và UART bận trong kiểm tra trên máy trước; sau đó kiểm tra log trên bo nếu có lỗi đường dây. Chưa nối phần điều khiển motor ở giai đoạn này.
+1. Nạp đúng ba sketch, nối UART/GND. Kiểm tra thông báo `A1 READY`, `A2 READY`, `TAG READY`.
+2. Đặt A1 trái, A2 phải, tâm anten cách nhau 0,50 m. Đặt Tag đứng yên chính giữa phía trước, cách trung điểm khoảng 1 m; chờ `CALIB_OK`.
+3. Di chuyển Tag trái/phải, kiểm tra dấu góc và nhãn hướng ở A1. `DEBUG_LOG=true` bật log cặp đo/`uart_bad` ở A1 và dòng gửi ở A2.
+4. Rút/nối dây TX hoặc tắt/bật Tag, A2: A1 phải bỏ hướng cũ khi mất dữ liệu, nhận cặp mới và giữ offset đã chốt.
+5. Reset A1: đặt Tag giữa và calibration lại.
 
-Chưa thực hiện các bước phần cứng này trong lần chuyển code. Thời gian callback, tốc độ ghép và sai số góc thực tế cần log từ bộ BU01 của dự án.
+Chưa nạp/thử bộ ESP32 + BU01 thật trong lần sửa này. Cần đo độ trễ, tỷ lệ ghép cặp và sai số góc trên bo. Code hiện chỉ xuất Serial, chưa điều khiển motor hoặc xử lý LiDAR.
