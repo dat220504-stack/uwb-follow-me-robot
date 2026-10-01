@@ -2,6 +2,12 @@
 
 Đồ án xe tự hành hỗ trợ mua sắm dùng 3 module BU01 (DW1000), mỗi module nối với một ESP32 thường. Người mang Tag; hai Anchor đặt trên xe.
 
+## Thay đổi trên nhánh phát triển
+
+Đã bỏ điều kiện loại mẫu dựa trên reply time chính xác 7000/21000 µs theo yêu cầu chủ dự án. Giữ thứ tự A2 trước A1, kiểm tra range, cửa sổ ghép 80 ms, auto-offset, Kalman và vote. Reply time vẫn được lưu/in khi bật debug; lịch phát do thư viện quản lý không thay đổi.
+
+Offset bù sai lệch khoảng cách, không thay thế kiểm soát thứ tự đo hoặc ghép đúng cặp mẫu. Bước chuyển dữ liệu qua UART và tính góc tại A1 chưa được triển khai.
+
 ## Phiên bản gốc
 
 Đây là code do chủ dự án cung cấp ngày 02/10/2026 (giờ Việt Nam), trước khi chuyển xử lý góc sang Anchor 1 qua UART.
@@ -23,7 +29,7 @@ Chưa triển khai UART giữa hai Anchor, điều khiển động cơ hoặc x�
 | A2 EUI / short address dự kiến | `87:17:5B:D5:A9:9A:E2:9C` / `0x1787` |
 | Khoảng cách hai Anchor trong Tag | **0,50 m** |
 | Cửa sổ ghép hai mẫu | 80 ms |
-| Reply time Tag kiểm tra | A2: 7000 µs; A1: 21000 µs |
+| Reply time dự kiến của thư viện (không kiểm tra để loại mẫu) | A2: 7000 µs; A1: 21000 µs |
 | Thứ tự danh sách Tag yêu cầu | A2 index 0; A1 index 1 |
 | Serial Monitor | 115200 baud |
 

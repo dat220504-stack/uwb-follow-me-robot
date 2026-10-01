@@ -87,8 +87,6 @@ const char *const DIRECTION_NAMES[DIRECTION_COUNT] = {
 const float KALMAN_Q = 36.0f;   // Tang: bam nhanh hon, rung nhieu hon.
 const float KALMAN_R = 25.0f;   // Tang: muot hon, tre hon.
 const uint32_t FILTER_RESET_MS = 800;
-const uint16_t A2_REPLY_US = 7000;
-const uint16_t A1_REPLY_US = 21000;
 
 // ============================================================
 // 4. THONG SO BAN TU DIEN NEU MUON TINH GOC
@@ -288,13 +286,7 @@ void newRange()
     const int8_t deviceIndex = device->getIndex();
     const uint16_t replyUs = device->getReplyTime();
 
-    // Xac nhan slot da duoc gan boi POLL; khong tu ep slot trong sketch.
-    if ((address == ANCHOR2_SHORT && replyUs != A2_REPLY_US) ||
-        (address == ANCHOR1_SHORT && replyUs != A1_REPLY_US)) {
-        clearFreshPair();
-        if (DEBUG_LOG) Serial.println("WAIT_CORRECT_REPLY_SLOT");
-        return;
-    }
+    // Reply time chi de debug; khong loai mau theo slot 7000/21000.
 
     // Chi quan tam A1 va A2.
     RangeSample *sample = nullptr;
