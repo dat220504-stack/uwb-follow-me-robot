@@ -1,5 +1,8 @@
 #pragma once
 #include "DW1000.h"
+// Macros co that trong DW1000Ranging.h: bat loi dat ten trung trong sketch.
+#define TAG 0
+#define ANCHOR 1
 struct MockTimestamp {
     int64_t value = 0;
     int64_t getTimestamp() { return value; }

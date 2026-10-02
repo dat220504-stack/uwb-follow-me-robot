@@ -10,7 +10,7 @@
 
 Mỗi node chỉ cần một file `.ino`, phần UART nằm ngay trong hai sketch Anchor. Các chức năng tự cân offset, tính góc, Kalman và vote của Tag cũ được giữ ở A1. Bản gốc nằm trên `main` tại [commit c435ee5](https://github.com/dat220504-stack/uwb-follow-me-robot/commit/c435ee53ac9a2b7701af0314960180eef9f1a5f2). [Markdown Tag gốc](docs/source/Tag_original.md) được giữ để đối chiếu.
 
-Đọc `setup()` và `loop()` trước. A1 chia thành các mục có chú thích: cấu hình → nhận dữ liệu → ghép cặp → góc/Kalman → vote → calibration. Các khai báo hàm Arduino tự sinh đã được bỏ khỏi sketch; không thêm thư viện hỗ trợ.
+A1 hiện có 284 dòng. Đọc setup() và loop() trước: nhận UART → ghép cặp → calibration hoặc tính góc/Kalman → vote. Dữ liệu calibration được gom lại để dùng chung phép tính cho d1/d2; log được rút ngắn.
 
 ## Cấu hình
 
@@ -61,7 +61,7 @@ A2 GND         ────────── A1 GND
 5. Đọc Serial Monitor của **A1**, chờ `CALIB_OK` rồi mới di chuyển. A1 in hướng thắng vote cùng `dA1`, `dA2`, góc và `valid=1`; cửa sổ không có mẫu hợp lệ in `KHONG CO DU LIEU | valid=0`.
 6. Tắt/bật lại Tag hoặc A2 sau khi calibration hoàn thành: A1 giữ offset trong RAM. Khi nhận báo mất/kết nối lại Tag hoặc không có cặp mới quá 500 ms, A1 xóa lịch sử hướng cũ rồi đợi cặp mới. Reset A1 sẽ calibration lại.
 
-`PRINT_DETAILS=false` ở A1 giữ cách in chỉ nhãn hướng như bản nguồn. `DEBUG_LOG=true` ở A1 bật thông tin cặp RAW, tuổi mẫu và lỗi dòng UART; ở A2 bật log dòng UART. Chưa có Wi-Fi, OTA, ESP-NOW, điều khiển motor hoặc xử lý LiDAR.
+`PRINT_DETAILS=false` ở A1 giữ cách in chỉ nhãn hướng như bản nguồn. `DEBUG_LOG=true` ở A1 bật khoảng cách RAW của cặp đo; ở A2 bật log dòng UART. Chưa có Wi-Fi, OTA, ESP-NOW, điều khiển motor hoặc xử lý LiDAR.
 
 Auto-offset không thay thế calibration khoảng cách tuyệt đối. Với hai Anchor, hình học hiện tại chọn nghiệm phía trước và không phân biệt Tag ở trước hay sau xe.
 

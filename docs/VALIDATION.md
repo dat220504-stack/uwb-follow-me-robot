@@ -1,6 +1,6 @@
 # Kết quả kiểm tra UART đơn giản — 02/10/2026
 
-Bản hiện tại đã rút gọn cả ba sketch: bỏ hàm không dùng, gộp cờ có cùng tác dụng, bỏ khai báo hàm Arduino tự sinh và thay chuỗi lệnh in dài bằng `Serial.printf()`. UART vẫn dùng cùng định dạng dòng chữ. Công thức và ngưỡng hình học, Kalman, vote, calibration của Tag cũ được giữ; cấu hình UWB, chân nối, antenna delay và thư viện giữ nguyên.
+Bản A1 hiện tại có 284 dòng: gom dữ liệu calibration, dùng chung phép tính cho hai khoảng cách, gộp xử lý timeout và rút ngắn log. UART vẫn dùng cùng định dạng dòng chữ với A2 hiện tại. Công thức và ngưỡng hình học, Kalman, vote, calibration của Tag cũ được giữ; cấu hình UWB, chân nối, antenna delay và thư viện giữ nguyên.
 
 ## Source thư viện
 
@@ -24,15 +24,15 @@ Dùng đúng `DW1000.zip` người dùng đã cung cấp trong dự án Điện.
 
 ## Biên dịch ESP32 thực
 
-Arduino CLI **1.2.0**, ESP32 Arduino core **3.3.11** có sẵn trên máy, FQBN `esp32:esp32:esp32`. Biên dịch bằng thư viện giải nén ở trên, không dùng các stub test.
+Arduino CLI **1.2.0**, ESP32 Arduino core **3.3.11** có sẵn trên máy, FQBN `esp32:esp32:esp32`. Tag và A2 không đổi so với lần biên dịch thành công trước. **Chưa xác nhận biên dịch bản A1 284 dòng:** tiến trình kiểm tra bản thử không trả được kết quả hoàn tất, còn lần chạy lại bị sandbox chặn khởi chạy Arduino CLI dù đã cấp quyền đọc công cụ. Không lấy kết quả của A1 cũ để khẳng định bản mới đã biên dịch.
 
 | Sketch | Kết quả | Flash | RAM tĩnh |
 |---|---|---:|---:|
 | Tag hiện tại | Thành công | 303.435 byte | 23.700 byte |
-| Anchor1 — bản rút gọn | Thành công | 327.771 byte | 24.180 byte |
+| Anchor1 — 284 dòng | Chưa xác nhận | — | — |
 | Anchor2 — bản rút gọn | Thành công | 304.139 byte | 23.804 byte |
 
-Số liệu lịch sử: Anchor1 gốc dùng 304.467 byte flash / 23.668 byte RAM. Bản UART nhị phân tại commit `3286a96` dùng 310.731 / 24.196 byte ở A1 và 304.343 / 23.812 byte ở A2. Code dòng chữ dễ đọc hơn nhưng `sscanf()` làm flash A1 tăng; các sketch vẫn nằm trong giới hạn board.
+Số liệu lịch sử: A1 506 dòng tại commit `3f5daae` đã biên dịch, dùng 327.771 byte flash / 24.180 byte RAM. Anchor1 gốc dùng 304.467 / 23.668 byte. Bản UART nhị phân tại commit `3286a96` dùng 310.731 / 24.196 byte ở A1 và 304.343 / 23.812 byte ở A2.
 
 Lệnh mẫu, thay đường dẫn thư viện bằng bản đã kiểm tra của dự án:
 
@@ -57,6 +57,8 @@ Các tình huống đã chạy gồm A1 đến trước/A2 đến trước, sai 
 Kiểm tra thêm các hành vi Tag gốc khi rút gọn: trước mốc 2 s chưa thu calibration; đủ 30 cặp nhưng chưa đủ 3 s vẫn chưa chốt; đủ 3 s nhưng thiếu 30 cặp vẫn chưa chốt; gain Kalman, reset sau 800 ms và vùng trễ 2°; mẫu tại đúng mốc 500 ms thuộc cửa sổ mới; chi tiết lấy mẫu mới nhất của hướng thắng; loop đình trệ qua hai cửa sổ không phát lại phiếu cũ.
 
 Thực hiện lại theo [tests/README.md](../tests/README.md).
+
+Bản 284 dòng còn được kiểm tra trực tiếp qua `loop()` từ lúc calibration đến lúc xuất hướng, tuổi mẫu khi `millis()` tràn và mốc ngắt cặp 1500 ms. Đã đối chiếu macro `TAG` của thư viện thật và dùng tên `TAG_SHORT` để tránh trùng; stub cũng có macro này để bắt lại lỗi đặt tên.
 
 ## Phần chưa kiểm tra
 

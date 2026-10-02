@@ -26,6 +26,7 @@ Bộ test kiểm tra:
 - Thông báo mất/kết nối lại Tag xóa mẫu/hướng cũ nhưng giữ offset A1.
 - Calibration với dữ liệu ổn định/không ổn định; bù offset một lần; dấu góc, tam giác vô lý, hòa phiếu, cửa sổ trống và mất mục tiêu.
 - Các mốc 2 s / 30 cặp / 3 s của calibration; gain và reset Kalman, vùng trễ 2°; mốc vote 500 ms, mẫu mới nhất của hướng thắng và bỏ phiếu cũ sau khi loop đình trệ.
+- A1 chạy trực tiếp loop() qua cả calibration và xuất hướng; tuổi mẫu đúng khi millis() tràn; reset calibration sau ngắt cặp quá 1500 ms.
 - Tag giữ A2 trước A1, loại Anchor lạ và không xóa thiết bị ngay trong callback.
 
 Các test không mô phỏng sóng UWB, thời gian ISR, UART driver thật hoặc nhiễu đo. Biên dịch với thư viện thực và thử BU01 là bước riêng; xem [kết quả kiểm tra](../docs/VALIDATION.md).

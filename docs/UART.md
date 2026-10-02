@@ -50,7 +50,7 @@ Báo trạng thái -1 xóa mẫu, Kalman và vote cũ, giữ offset đã calibra
 
 1. Nạp đúng ba sketch, nối UART/GND. Kiểm tra thông báo `A1 READY`, `A2 READY`, `TAG READY`.
 2. Đặt A1 trái, A2 phải, tâm anten cách nhau 0,50 m. Đặt Tag đứng yên chính giữa phía trước, cách trung điểm khoảng 1 m; chờ `CALIB_OK`.
-3. Di chuyển Tag trái/phải, kiểm tra dấu góc và nhãn hướng ở A1. `DEBUG_LOG=true` bật log cặp đo/`uart_bad` ở A1 và dòng gửi ở A2.
+3. Di chuyển Tag trái/phải, kiểm tra dấu góc và nhãn hướng ở A1. `DEBUG_LOG=true` bật log cặp RAW ở A1 và dòng gửi ở A2.
 4. Rút/nối dây TX hoặc tắt/bật Tag, A2: A1 phải bỏ hướng cũ khi mất dữ liệu, nhận cặp mới và giữ offset đã chốt.
 5. Reset A1: đặt Tag giữa và calibration lại.
 
